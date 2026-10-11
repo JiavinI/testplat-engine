@@ -72,6 +72,8 @@ class SingleApiEngine:
         client: HttpClient | None = None
         owns_client = False
         public_request: JsonObject | None = None
+        # 已分类异常；finally 中 close 失败时不得覆盖它。
+        classified: EngineError | None = None
 
         try:
             api = self._load_api(request.api_id, request.assets_root)
@@ -85,9 +87,10 @@ class SingleApiEngine:
                 body=resolved.get("body"),
             )
 
-            # 进入真实 HTTP 后，未知缺陷归 execution 阶段。
-            stage = "execution"
+            # 先拿到 HTTP client；_acquire_client 失败仍属 preflight/internal-preflight。
+            # 仅在 client 就绪后、真实 HTTP 调用前切换到 execution。
             client, owns_client = self._acquire_client()
+            stage = "execution"
             response = await client.request(
                 method=resolved["method"],
                 url=full_url,
@@ -116,23 +119,41 @@ class SingleApiEngine:
                 },
             )
 
-        except EngineError:
+        except EngineError as exc:
             # 已分类异常直接上抛，避免再次包装丢失 kind/stage。
+            classified = exc
             raise
         except Exception as exc:
-            mapped = self._map_exception(exc, stage)
+            classified = self._map_exception(exc, stage)
             logger.error(
                 "engine execute failed kind=%s stage=%s reason=%s",
-                mapped.kind,
-                mapped.stage,
-                mapped.log_reason,
+                classified.kind,
+                classified.stage,
+                classified.log_reason,
                 exc_info=exc,
             )
-            raise mapped from exc
+            raise classified from exc
         finally:
             # 仅关闭本引擎创建的 client；注入的 mock/共享 client 由调用方管理生命周期。
+            # close 失败不得覆盖已分类的 timeout/transport；成功路径 close 失败归一为 internal。
             if owns_client and client is not None and hasattr(client, "close"):
-                await client.close()  # type: ignore[misc]
+                try:
+                    await client.close()  # type: ignore[misc]
+                except Exception as close_exc:
+                    if classified is not None:
+                        logger.warning(
+                            "http client close failed after classified error kind=%s stage=%s: %s",
+                            classified.kind,
+                            classified.stage,
+                            close_exc,
+                        )
+                    else:
+                        raise EngineInternalError(
+                            stage,
+                            log_reason=(
+                                f"client.close failed: {type(close_exc).__name__}: {close_exc}"
+                            ),
+                        ) from close_exc
 
     def _acquire_client(self) -> tuple[HttpClient, bool]:
         """获取 HTTP client；返回 (client, owns_client)。"""

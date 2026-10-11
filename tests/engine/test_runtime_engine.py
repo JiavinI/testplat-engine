@@ -444,3 +444,88 @@ async def test_engine_does_not_read_config_from_disk(
 def test_engine_port_structural_typing() -> None:
     engine: Any = SingleApiEngine()
     assert asyncio.iscoroutinefunction(engine.execute)
+
+
+@pytest.mark.asyncio
+async def test_acquire_client_failure_stays_preflight(
+    assets_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_acquire_client 失败不得记为 execution；应归 internal/preflight。"""
+    engine = SingleApiEngine()
+
+    def _boom() -> tuple[HttpClient, bool]:
+        raise RuntimeError("cannot create http client")
+
+    monkeypatch.setattr(engine, "_acquire_client", _boom)
+    with pytest.raises(EngineInternalError) as exc_info:
+        await engine.execute(
+            _request(
+                assets_root,
+                "api.common.get_status",
+                _env("http://127.0.0.1:9"),
+            )
+        )
+    err = exc_info.value
+    assert err.kind == "internal"
+    assert err.stage == "preflight"
+    assert "cannot create http client" in (err.log_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_timeout_preserved_when_owned_client_close_fails(
+    assets_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """请求已分类为 timeout 时，close 抛错不得覆盖 EngineTimeoutError。"""
+
+    class TimeoutThenBadClose(HttpClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> HttpResponse:
+            raise httpx.TimeoutException("timed out")
+
+        async def close(self) -> None:
+            raise RuntimeError("close boom")
+
+    engine = SingleApiEngine()
+    monkeypatch.setattr(
+        engine, "_acquire_client", lambda: (TimeoutThenBadClose(), True)
+    )
+    with pytest.raises(EngineTimeoutError) as exc_info:
+        await engine.execute(
+            _request(
+                assets_root,
+                "api.common.get_status",
+                _env("http://127.0.0.1:9"),
+                timeout_seconds=0.2,
+            )
+        )
+    err = exc_info.value
+    assert err.kind == "timeout"
+    assert err.stage == "execution"
+
+
+@pytest.mark.asyncio
+async def test_close_failure_after_success_normalizes_to_internal(
+    assets_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP 成功但 owned client.close 失败时，归一为 EngineInternalError(execution)。"""
+
+    class OkThenBadClose(HttpClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> HttpResponse:
+            return HttpResponse(status_code=200, headers={}, body={"status": "ok"})
+
+        async def close(self) -> None:
+            raise RuntimeError("close boom")
+
+    engine = SingleApiEngine()
+    monkeypatch.setattr(engine, "_acquire_client", lambda: (OkThenBadClose(), True))
+    with pytest.raises(EngineInternalError) as exc_info:
+        await engine.execute(
+            _request(
+                assets_root,
+                "api.common.get_status",
+                _env("http://example.invalid"),
+            )
+        )
+    err = exc_info.value
+    assert err.kind == "internal"
+    assert err.stage == "execution"
+    assert "close" in (err.log_reason or "").lower()

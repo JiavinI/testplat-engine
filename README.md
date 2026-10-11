@@ -50,7 +50,7 @@ asyncio.run(main())
 
 真实调用需要调用方提供资产目录和**已解析**的环境配置。仓库中的测试与示例使用本地 HTTP 服务，不依赖公网或相邻目录。
 
-旧入口 `run_api(api_id, registry, env, params)` 仍可用于本地示例，但会自行查找 env 文件；新 Control 集成应只依赖 `EnginePort` / `create_engine()`（或 `SingleApiEngine`）。
+旧入口 `run_api(api_id, registry, env, params)` 仍可用于本地示例，但会自行查找 env 文件；新 Control 集成应只依赖官方 `create_engine()`（实现 `EnginePort`），不要再猜测其它入口。
 
 ## 开发检查
 
