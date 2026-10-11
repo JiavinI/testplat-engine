@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from testplat_engine.engine.executor import run_api
+from testplat_engine.engine.executor import SingleApiEngine, run_api
 from testplat_engine.interface import (
     ApiExecutionOutcome,
     ApiExecutionRequest,
@@ -17,7 +17,7 @@ from testplat_engine.interface import (
     InvalidEnvironmentError,
 )
 
-# 保留旧入口供基线示例使用；新 Control 集成只依赖 EnginePort。
+# 保留旧入口供基线示例使用；新 Control 集成只依赖 EnginePort / SingleApiEngine。
 
 __all__ = [
     "ApiExecutionOutcome",
@@ -31,5 +31,6 @@ __all__ = [
     "EngineUnavailableError",
     "InvalidAssetError",
     "InvalidEnvironmentError",
+    "SingleApiEngine",
     "run_api",
 ]

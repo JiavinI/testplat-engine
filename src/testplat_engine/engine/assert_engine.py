@@ -1,6 +1,8 @@
-"""断言引擎
+"""断言引擎。
 
-验证 HTTP 响应是否符合预期条件。
+仅支持已实现的 ``status_code`` 与简单 ``path`` + ``value`` 条件。
+YAML 中出现的其他键（如 ``contains``）保持忽略，不静默扩展为新算子。
+断言失败由调用方转为业务 ``failed`` outcome，而不是系统异常。
 """
 
 from typing import Any

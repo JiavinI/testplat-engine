@@ -278,3 +278,22 @@ host: server
 
         expected = assets_root / "api" / "common" / "health_check.yaml"
         assert path == expected
+
+
+class TestRegistryPathSafety:
+    """资产路径安全：api_id 不得逃逸 assets_root。"""
+
+    def test_rejects_dotdot_segment(self, tmp_path: Path):
+        registry = Registry(tmp_path)
+        with pytest.raises(ValueError, match="非法路径段"):
+            registry._api_id_to_path("api.common..secret")
+
+    def test_rejects_path_separator(self, tmp_path: Path):
+        registry = Registry(tmp_path)
+        with pytest.raises(ValueError, match="路径分隔符"):
+            registry._api_id_to_path("api/common/health")
+
+    def test_valid_id_stays_under_root(self, tmp_path: Path):
+        registry = Registry(tmp_path)
+        path = registry._api_id_to_path("api.common.health_check")
+        assert path.is_relative_to(tmp_path.resolve())

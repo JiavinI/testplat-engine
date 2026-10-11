@@ -1,4 +1,4 @@
-"""执行器的本地 HTTP 集成测试。"""
+"""执行器的本地 HTTP 集成测试（旧 run_api 兼容入口）。"""
 
 import json
 import shutil
@@ -69,7 +69,8 @@ async def test_run_api_get_uses_local_server(registry: Registry):
     result = await run_api("api.common.get_status", registry, "test")
 
     assert result.is_success
-    assert result.response.status_code == 200
+    # 兼容入口现返回可 JSON 序列化的公开响应快照。
+    assert result.response["status_code"] == 200
 
 
 @pytest.mark.asyncio
@@ -82,4 +83,4 @@ async def test_run_api_post_resolves_params_locally(registry: Registry):
     )
 
     assert result.is_success
-    assert result.response.body["json"]["username"] == "local-user"
+    assert result.response["body"]["json"]["username"] == "local-user"

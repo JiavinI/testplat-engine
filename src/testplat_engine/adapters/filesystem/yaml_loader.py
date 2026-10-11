@@ -1,6 +1,8 @@
-"""YAML 资产加载器
+"""YAML 资产加载器。
 
-该模块提供从 YAML 文件加载测试资产的功能,支持加载 API 契约等资产定义。
+该模块只负责把磁盘上的 YAML 读成字典并转成 ``Api`` 模型。
+配置所有权：环境 ``api_hosts`` 不属于资产文件，由 Control 解析后经
+``ApiExecutionRequest.environment`` 传入执行引擎，本模块不读取 env 配置。
 """
 
 from pathlib import Path

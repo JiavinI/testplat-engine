@@ -1,6 +1,7 @@
-"""基于 httpx 的 HTTP 客户端实现
+"""基于 httpx 的 HTTP 客户端实现。
 
-提供 HttpClient 抽象接口的 httpx 实现,支持异步 HTTP 请求。
+提供 HttpClient 抽象接口的 httpx 实现。调用方传入的 ``timeout`` 必须原样交给
+``httpx.AsyncClient.request``，由执行引擎在 ``finally`` 中 ``close`` 释放连接池。
 """
 
 import httpx

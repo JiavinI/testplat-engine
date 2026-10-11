@@ -1,6 +1,7 @@
-"""变量解析器
+"""变量解析器。
 
-处理 API 契约中的变量渲染,将占位符替换为实际值。
+处理 API 契约中已实现字段（body / headers / success）的 ``${name}`` 渲染。
+不静默扩展未实现的 DSL（如 query、auth）；格式能力以现有 YAML 行为为准。
 """
 
 from typing import Any
