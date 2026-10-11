@@ -1,0 +1,7 @@
+id: api.common.get_status
+name: 获取状态码
+host: local
+method: GET
+url: /status/200
+success:
+  status_code: 200

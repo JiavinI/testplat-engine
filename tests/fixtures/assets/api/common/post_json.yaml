@@ -1,0 +1,12 @@
+id: api.common.post_json
+name: POST JSON 数据
+host: local
+method: POST
+url: /post
+request:
+  body:
+    username: "${username}"
+    email: "${email}"
+success:
+  path: $.json.username
+  value: "${username}"

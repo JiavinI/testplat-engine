@@ -1,0 +1,2 @@
+api_hosts:
+  local: BASE_URL
