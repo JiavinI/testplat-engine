@@ -9,8 +9,9 @@
 - 基于 `httpx.AsyncClient` 的异步 HTTP 请求
 - `status_code` 和简单 `$.field.nested` 条件检查
 - `ApiResult` 的 `success` / `failed` 结果模型
+- Phase 2.5 公共 `EnginePort.execute(request)` 协议、JSON DTO 和稳定系统异常
 
-当前基线不提供 Case 编排、重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。异常分类、Control 端口和 JSON 边界将在 Phase 2.5 中定义和实现。
+当前基线不提供 Case 编排、重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。`EnginePort` 的 0.1.x 兼容范围只覆盖单 API 请求，不承诺执行器实现已经迁移到该协议。
 
 ## 安装
 

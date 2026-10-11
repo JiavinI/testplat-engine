@@ -2,11 +2,34 @@
 
 __version__ = "0.1.0"
 
-# 导出核心 API
-# 注意: 需要先安装依赖 (pip install pyyaml httpx)
-try:
-    from testplat_engine.engine.executor import run_api
-    __all__ = ["run_api"]
-except ImportError:
-    # 依赖未安装时不导出
-    __all__ = []
+from testplat_engine.engine.executor import run_api
+from testplat_engine.interface import (
+    ApiExecutionOutcome,
+    ApiExecutionRequest,
+    AssetNotFoundError,
+    EngineError,
+    EngineInternalError,
+    EnginePort,
+    EngineTimeoutError,
+    EngineTransportError,
+    EngineUnavailableError,
+    InvalidAssetError,
+    InvalidEnvironmentError,
+)
+
+# 保留旧入口供基线示例使用；新 Control 集成只依赖 EnginePort。
+
+__all__ = [
+    "ApiExecutionOutcome",
+    "ApiExecutionRequest",
+    "AssetNotFoundError",
+    "EngineError",
+    "EngineInternalError",
+    "EnginePort",
+    "EngineTimeoutError",
+    "EngineTransportError",
+    "EngineUnavailableError",
+    "InvalidAssetError",
+    "InvalidEnvironmentError",
+    "run_api",
+]
