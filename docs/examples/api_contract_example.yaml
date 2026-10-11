@@ -1,0 +1,34 @@
+# API 契约示例文件
+# 用于演示 YAML 资产加载器的使用
+
+# API 唯一标识 (必需)
+# 格式: api.{category}.{subcategory}.{name}
+id: api.common.health_check
+
+# API 可读名称 (必需)
+name: 健康检查
+
+# HTTP 方法 (必需)
+# 支持: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS
+method: GET
+
+# API 相对路径 (必需)
+# 不包含 host 部分
+url: /health
+
+# 主机标识 (必需)
+# 对应环境配置中的 host 名称
+host: test_server
+
+# 请求定义 (可选,默认为空字典)
+# 包含请求头、请求体、查询参数等
+request:
+  headers:
+    Content-Type: application/json
+    Accept: application/json
+  body: {}
+
+# 成功判定条件 (可选,默认为空字典)
+# 用于判断 API 调用是否成功
+success:
+  status_code: 200
