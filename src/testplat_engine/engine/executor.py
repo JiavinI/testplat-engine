@@ -239,6 +239,16 @@ class SingleApiEngine:
         return str(value)
 
 
+
+def create_engine() -> SingleApiEngine:
+    """公开工厂：返回默认 ``SingleApiEngine``，供 Control 包适配器解析。
+
+    与直接构造 ``SingleApiEngine()`` 等价；提供稳定可发现入口，
+    避免 Control 依赖模块级 ``execute`` 或私有路径。
+    """
+    return SingleApiEngine()
+
+
 async def run_api(
     api_id: str,
     registry: Registry,

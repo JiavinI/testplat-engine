@@ -27,11 +27,11 @@ uv pip install -e ".[dev]"
 import asyncio
 from pathlib import Path
 
-from testplat_engine import ApiExecutionRequest, SingleApiEngine
+from testplat_engine import ApiExecutionRequest, create_engine
 
 
 async def main() -> None:
-    engine = SingleApiEngine()
+    engine = create_engine()  # 等价于 SingleApiEngine()
     outcome = await engine.execute(
         ApiExecutionRequest(
             api_id="api.common.health_check",
@@ -50,7 +50,7 @@ asyncio.run(main())
 
 真实调用需要调用方提供资产目录和**已解析**的环境配置。仓库中的测试与示例使用本地 HTTP 服务，不依赖公网或相邻目录。
 
-旧入口 `run_api(api_id, registry, env, params)` 仍可用于本地示例，但会自行查找 env 文件；新 Control 集成应只依赖 `EnginePort` / `SingleApiEngine`。
+旧入口 `run_api(api_id, registry, env, params)` 仍可用于本地示例，但会自行查找 env 文件；新 Control 集成应只依赖 `EnginePort` / `create_engine()`（或 `SingleApiEngine`）。
 
 ## 开发检查
 
@@ -73,3 +73,11 @@ src/testplat_engine/
 ```
 
 本仓库尚未确认许可证文本，因此不在此声明许可证。
+
+
+## Phase 2.5 集成说明
+
+- 公开运行时入口：`create_engine()` → `SingleApiEngine`（实现 `EnginePort`）
+- Control 通过已安装的 Python 包解析该入口；不要修改 `sys.path`
+- 本地联调：Control 可用 uv path editable 指向本 worktree（相对路径）
+- 正式分发锁定为 git commit / tag 后，由 Control `pyproject.toml` 声明；本阶段未推送远程时以本地 editable 验收
