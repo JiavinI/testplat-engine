@@ -1,4 +1,4 @@
-"""Filesystem adapters."""
+"""文件系统适配器（API / Case 资产加载）。"""
 
 from testplat_engine.adapters.filesystem.case_loader import (
     case_id_to_path,
