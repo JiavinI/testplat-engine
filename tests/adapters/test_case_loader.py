@@ -298,3 +298,210 @@ def test_runtime_expectations_pending_handoff(case_id: str, expectation: str) ->
     case = load_case(case_id, FIXTURES)
     assert case.id == case_id
     assert expectation.startswith("pending Agent2:")
+
+
+# --- S2 / S3 / P2 / P4：loader 修复回归 ---
+
+
+def _minimal_case(**overrides):
+    data = {
+        "schema_version": "0.2",
+        "id": "case.demo.fix",
+        "steps": [{"step_id": "a", "type": "api", "api_id": "api.demo.get"}],
+    }
+    data.update(overrides)
+    return data
+
+
+def test_s2_non_string_yaml_keys_invalid_asset_not_typeerror() -> None:
+    """S2：非字符串键不得 TypeError；顶层与 step 均 invalid_asset/preflight。"""
+    with pytest.raises(InvalidAssetError) as top:
+        parse_case_dict(
+            {
+                "schema_version": "0.2",
+                "id": "case.demo.s2",
+                123: "bad",
+                "steps": [{"step_id": "a", "type": "api", "api_id": "api.demo.get"}],
+            }
+        )
+    assert top.value.kind == "invalid_asset"
+    assert top.value.stage == "preflight"
+    assert "字符串" in top.value.public_message
+
+    with pytest.raises(InvalidAssetError) as mixed:
+        parse_case_dict(
+            {
+                "schema_version": "0.2",
+                "id": "case.demo.s2b",
+                "metadata": {"x": 1},
+                7: "also",
+                "steps": [{"step_id": "a", "type": "api", "api_id": "api.demo.get"}],
+            }
+        )
+    assert mixed.value.kind == "invalid_asset"
+    assert mixed.value.stage == "preflight"
+
+    with pytest.raises(InvalidAssetError) as step:
+        parse_case_dict(
+            {
+                "schema_version": "0.2",
+                "id": "case.demo.s2c",
+                "steps": [
+                    {
+                        "step_id": "a",
+                        "type": "api",
+                        "api_id": "api.demo.get",
+                        9: "nope",
+                    }
+                ],
+            }
+        )
+    assert step.value.kind == "invalid_asset"
+    assert step.value.stage == "preflight"
+    assert "字符串" in step.value.public_message
+
+
+@pytest.mark.parametrize(
+    "raw,needle",
+    [
+        ("${params.a", "未闭合"),
+        ("prefix ${params.a", "未闭合"),
+        ("${}", "空"),
+        ("x=${}y", "空"),
+        ("${{params.a}}", "花括号"),
+        ("${params.{a}}", "花括号"),
+        ("${params.a{b}}", "花括号"),
+    ],
+)
+def test_s3_placeholder_syntax_mutations_rejected(raw: str, needle: str) -> None:
+    """S3：未闭合 / 空 / 多余花括号整串扫描拒绝，禁止静默降级。"""
+    data = _minimal_case(
+        steps=[
+            {
+                "step_id": "a",
+                "type": "api",
+                "api_id": "api.demo.get",
+                "params": {"v": raw},
+            }
+        ]
+    )
+    with pytest.raises(InvalidAssetError) as ei:
+        parse_case_dict(data)
+    assert ei.value.kind == "invalid_asset"
+    assert ei.value.stage == "preflight"
+    assert needle in ei.value.public_message
+
+
+def test_s3_wellformed_placeholder_still_accepted() -> None:
+    case = parse_case_dict(
+        _minimal_case(
+            params={"resource_name": "demo"},
+            steps=[
+                {
+                    "step_id": "a",
+                    "type": "api",
+                    "api_id": "api.demo.get",
+                    "params": {
+                        "name": "${params.resource_name}",
+                        "label": "x-${params.resource_name}-y",
+                    },
+                }
+            ],
+        )
+    )
+    assert "params.resource_name" in case.steps[0].params["name"]
+
+
+def test_p2_params_full_path_walk_missing_and_non_object() -> None:
+    """P2：${params.a.b.c} 全路径行走；缺失或中途非对象 → invalid_input + 完整路径。"""
+    case_ok = parse_case_dict(
+        _minimal_case(
+            params={"a": {"b": {"c": 1}}},
+            steps=[
+                {
+                    "step_id": "a",
+                    "type": "api",
+                    "api_id": "api.demo.get",
+                    "params": {"v": "${params.a.b.c}"},
+                }
+            ],
+        )
+    )
+    assert validate_case_request_params(case_ok, {})["a"]["b"]["c"] == 1
+
+    case_missing = parse_case_dict(
+        _minimal_case(
+            params={"a": {"b": {}}},
+            steps=[
+                {
+                    "step_id": "a",
+                    "type": "api",
+                    "api_id": "api.demo.get",
+                    "params": {"v": "${params.a.b.c}"},
+                }
+            ],
+        )
+    )
+    with pytest.raises(InvalidInputError) as miss:
+        validate_case_request_params(case_missing, {})
+    assert miss.value.kind == "invalid_input"
+    assert miss.value.stage == "preflight"
+    assert "params.a.b.c" in miss.value.public_message
+
+    case_scalar = parse_case_dict(
+        _minimal_case(
+            params={"a": "only-string"},
+            steps=[
+                {
+                    "step_id": "a",
+                    "type": "api",
+                    "api_id": "api.demo.get",
+                    "params": {"v": "${params.a.b.c}"},
+                }
+            ],
+        )
+    )
+    with pytest.raises(InvalidInputError) as mid:
+        validate_case_request_params(case_scalar, {})
+    assert mid.value.kind == "invalid_input"
+    assert mid.value.stage == "preflight"
+    assert "params.a.b.c" in mid.value.public_message
+
+
+def test_p4_explicit_null_rejected_missing_defaults() -> None:
+    """P4：缺省用默认；显式 null 拒绝（顶层 tags/params 与 step params）。"""
+    ok = parse_case_dict(_minimal_case())
+    assert ok.tags == ()
+    assert ok.params == {}
+    assert ok.steps[0].params == {}
+
+    with pytest.raises(InvalidAssetError) as tags:
+        parse_case_dict(_minimal_case(tags=None))
+    assert tags.value.kind == "invalid_asset"
+    assert tags.value.stage == "preflight"
+    assert "tags" in tags.value.public_message
+    assert "null" in tags.value.public_message
+
+    with pytest.raises(InvalidAssetError) as params:
+        parse_case_dict(_minimal_case(params=None))
+    assert params.value.kind == "invalid_asset"
+    assert "params" in params.value.public_message
+    assert "null" in params.value.public_message
+
+    with pytest.raises(InvalidAssetError) as step_params:
+        parse_case_dict(
+            _minimal_case(
+                steps=[
+                    {
+                        "step_id": "a",
+                        "type": "api",
+                        "api_id": "api.demo.get",
+                        "params": None,
+                    }
+                ]
+            )
+        )
+    assert step_params.value.kind == "invalid_asset"
+    assert step_params.value.stage == "preflight"
+    assert "params" in step_params.value.public_message
+    assert "null" in step_params.value.public_message

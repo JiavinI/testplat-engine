@@ -32,10 +32,25 @@ from testplat_engine.interface import (
     _json_object,
 )
 
-# 占位符：${path.to.value}；第一批只支持点分对象键。
-_PLACEHOLDER_RE = re.compile(r"\$\{([^}]+)\}")
 # 下标引用显式禁止。
 _STEPS_INDEX_RE = re.compile(r"^steps\.\d+")
+
+
+def _format_keys(keys: set[object]) -> str:
+    """安全格式化键集合，避免非字符串键触发 TypeError。"""
+    return ", ".join(sorted(str(k) for k in keys))
+
+
+def _reject_non_string_keys(mapping: Mapping[Any, Any], *, where: str) -> None:
+    """schema-owned 对象的字段名必须是字符串；否则 invalid_asset/preflight。"""
+    bad = [k for k in mapping.keys() if not isinstance(k, str)]
+    if not bad:
+        return
+    rendered = ", ".join(repr(k) for k in bad)
+    raise InvalidAssetError(
+        public_message=f"{where} 字段名必须是字符串，收到非字符串键: {rendered}",
+        log_reason=f"non-string keys at {where}: {bad!r}",
+    )
 
 
 def case_id_to_path(case_id: str, assets_root: Path) -> Path:
@@ -91,12 +106,14 @@ def parse_case_dict(
             log_reason=f"type={type(data).__name__}",
         )
 
+    # S2：先拒绝非字符串键，再用安全格式化报告未知字段。
+    _reject_non_string_keys(data, where="Case 顶层")
     unknown_top = set(data.keys()) - CASE_TOP_LEVEL_KEYS
     if unknown_top:
-        keys = ", ".join(sorted(unknown_top))
+        keys = _format_keys(unknown_top)
         raise InvalidAssetError(
             public_message=f"Case 含未知字段: {keys}",
-            log_reason=f"unknown top-level keys: {sorted(unknown_top)}",
+            log_reason=f"unknown top-level keys: {sorted(str(k) for k in unknown_top)}",
         )
 
     schema_version = data.get("schema_version")
@@ -139,8 +156,15 @@ def parse_case_dict(
             log_reason=f"desc type={type(desc).__name__}",
         )
 
-    tags_raw = data.get("tags", [])
-    if tags_raw is None:
+    # P4：缺省 → 默认 []；显式 null → 拒绝（与 missing 语义分离）。
+    if "tags" in data:
+        tags_raw = data["tags"]
+        if tags_raw is None:
+            raise InvalidAssetError(
+                public_message="Case tags 不得为 null（缺省请省略该字段）",
+                log_reason="tags=null",
+            )
+    else:
         tags_raw = []
     if not isinstance(tags_raw, list):
         raise InvalidAssetError(
@@ -156,8 +180,15 @@ def parse_case_dict(
             )
         tags.append(tag)
 
-    params_raw = data.get("params", {})
-    if params_raw is None:
+    # P4：顶层 params 显式 null 非法；缺省才回落为 {}。
+    if "params" in data:
+        params_raw = data["params"]
+        if params_raw is None:
+            raise InvalidAssetError(
+                public_message="Case params 不得为 null（缺省请省略该字段）",
+                log_reason="params=null",
+            )
+    else:
         params_raw = {}
     try:
         params = _json_object(params_raw, "params")
@@ -215,11 +246,8 @@ def validate_case_request_params(case: Case, request_params: Mapping[str, JsonVa
             root, _, rest = ref.partition(".")
             if root != "params":
                 continue
-            if not rest:
-                missing.append(ref)
-                continue
-            key = rest.split(".", 1)[0]
-            if key not in merged:
+            # P2：沿完整对象路径行走；中途缺失或非对象 → invalid_input。
+            if _params_path_unresolvable(merged, rest):
                 missing.append(ref)
     if missing:
         # 去重但保持发现顺序，便于稳定断言。
@@ -238,13 +266,14 @@ def _parse_step(raw: Any, *, index: int) -> CaseStep:
             log_reason=f"type={type(raw).__name__}",
         )
 
+    _reject_non_string_keys(raw, where=f"步骤[{index}]")
     unknown = set(raw.keys()) - API_STEP_KEYS
     # 即便 type 非 api，也先拒绝未知键与旧别名，避免静默吞掉未实现能力。
     if unknown:
-        keys = ", ".join(sorted(unknown))
+        keys = _format_keys(unknown)
         raise InvalidAssetError(
             public_message=f"步骤[{index}] 含未知字段: {keys}",
-            log_reason=f"unknown step keys: {sorted(unknown)}",
+            log_reason=f"unknown step keys: {sorted(str(k) for k in unknown)}",
         )
 
     step_id = raw.get("step_id")
@@ -280,8 +309,15 @@ def _parse_step(raw: Any, *, index: int) -> CaseStep:
             log_reason=f"name={name!r}",
         )
 
-    params_raw = raw.get("params", {})
-    if params_raw is None:
+    # P4：步骤 params 显式 null 非法；缺省才回落为 {}。
+    if "params" in raw:
+        params_raw = raw["params"]
+        if params_raw is None:
+            raise InvalidAssetError(
+                public_message=f"步骤 {step_id} 的 params 不得为 null（缺省请省略该字段）",
+                log_reason=f"step={step_id} params=null",
+            )
+    else:
         params_raw = {}
     try:
         params = _json_object(params_raw, "params")
@@ -382,8 +418,60 @@ def _validate_one_ref(ref: str, step_id: str, declared_aliases: set[str]) -> Non
         )
 
 
+def _params_path_unresolvable(merged: Mapping[str, JsonValue], rest: str) -> bool:
+    """判断 ``params.<rest>`` 是否无法在合并参数中解析。
+
+    缺失任一片段，或中途节点不是对象，均视为不可解析（P2）。
+    """
+    if not rest:
+        return True
+    segments = rest.split(".")
+    if any(part == "" for part in segments):
+        return True
+    node: object = merged
+    for part in segments:
+        if not isinstance(node, Mapping):
+            return True
+        if part not in node:
+            return True
+        node = node[part]
+    return False
+
+
+def _scan_placeholders_in_string(text: str) -> list[str]:
+    """整串扫描占位符；未闭合 / 空 / 多余花括号一律拒绝，禁止静默降级（S3）。"""
+    refs: list[str] = []
+    cursor = 0
+    while True:
+        start = text.find("${", cursor)
+        if start < 0:
+            break
+        close = text.find("}", start + 2)
+        if close < 0:
+            snippet = text[start : start + 32]
+            raise InvalidAssetError(
+                public_message=f"占位符未闭合: {snippet}",
+                log_reason=f"unclosed placeholder at {start}: {snippet!r}",
+            )
+        inner = text[start + 2 : close]
+        if inner == "":
+            raise InvalidAssetError(
+                public_message="占位符不能为空: ${}",
+                log_reason="empty placeholder ${}",
+            )
+        # 多余花括号：${{a}} / ${a{b}} 等，内容中不得再含 { 或 }。
+        if "{" in inner or "}" in inner:
+            raise InvalidAssetError(
+                public_message=f"占位符含多余花括号: ${{{inner}}}",
+                log_reason=f"extra braces in placeholder={inner!r}",
+            )
+        refs.append(inner)
+        cursor = close + 1
+    return refs
+
+
 def _iter_placeholders(value: Any) -> list[str]:
-    """收集 params 树中全部占位符路径（不含 ${}）。"""
+    """收集 params 树中全部占位符路径（不含 ${}）；畸形语法在此拒绝。"""
     found: list[str] = []
 
     def walk(node: Any) -> None:
@@ -394,8 +482,7 @@ def _iter_placeholders(value: Any) -> list[str]:
             for item in node:
                 walk(item)
         elif isinstance(node, str):
-            for match in _PLACEHOLDER_RE.finditer(node):
-                found.append(match.group(1))
+            found.extend(_scan_placeholders_in_string(node))
 
     walk(value)
     return found

@@ -10,7 +10,10 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal, Protocol, TypeAlias, overload
+
+from testplat_engine.shared.redact import redact_json
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -61,6 +64,47 @@ def _json_object(value: object, field_name: str) -> JsonObject:
     return result
 
 
+def _freeze_json(value: JsonValue) -> object:
+    """深冻结 JSON 快照：dict→MappingProxyType，list→tuple，禁止就地改写。"""
+    if isinstance(value, dict):
+        return MappingProxyType({k: _freeze_json(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: object) -> JsonValue:
+    """产出全新可变 JSON 副本，供 to_dict() 公开序列化。"""
+    if isinstance(value, Mapping):
+        return {str(k): _thaw_json(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    if isinstance(value, list):
+        return [_thaw_json(item) for item in value]
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value
+    raise TypeError(f"无法解冻非 JSON 值: {type(value).__name__}")
+
+
+def _snapshot_object(value: object, field_name: str, *, redact: bool) -> object:
+    """复制并可选脱敏后深冻结；用于请求/结果内部不可变快照。"""
+    copied = _json_object(value, field_name)
+    if redact:
+        copied = redact_json(copied)
+        assert isinstance(copied, dict)
+    return _freeze_json(copied)
+
+
+def _snapshot_value(value: object, field_name: str, *, redact: bool) -> object:
+    """复制并可选脱敏后深冻结任意 JSON 值。"""
+    copied = _json_value(value, field_name)
+    if redact:
+        copied = redact_json(copied)
+    return _freeze_json(copied)
+
+
 def _finite_non_negative_seconds(value: float, field_name: str) -> float:
     """耗时必须是有限非负秒数，防止 NaN/负值进入公开结果。"""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -86,16 +130,19 @@ class ApiExecutionRequest:
             raise ValueError("api_id 不能为空")
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds 必须是有限正数")
-        object.__setattr__(self, "environment", _json_object(self.environment, "environment"))
-        object.__setattr__(self, "params", _json_object(self.params, "params"))
+        # 请求快照深冻结；不脱敏，以免破坏后续执行参数解析。
+        object.__setattr__(
+            self, "environment", _snapshot_object(self.environment, "environment", redact=False)
+        )
+        object.__setattr__(self, "params", _snapshot_object(self.params, "params", redact=False))
 
     def to_dict(self) -> JsonObject:
         """返回可直接交给 `json.dumps` 的稳定表示。"""
         return {
             "api_id": self.api_id,
             "assets_root": str(self.assets_root),
-            "environment": dict(self.environment),
-            "params": dict(self.params),
+            "environment": _thaw_json(self.environment),  # type: ignore[arg-type]
+            "params": _thaw_json(self.params),  # type: ignore[arg-type]
             "timeout_seconds": self.timeout_seconds,
         }
 
@@ -116,20 +163,25 @@ class ApiExecutionOutcome:
             raise ValueError("业务 failed 结果必须包含 error")
         if self.status == "success" and self.error is not None:
             raise ValueError("业务 success 结果不能包含 error")
+        # 公开结果强制递归脱敏后再冻结，防止嵌套秘密随 to_dict 外泄。
         if self.request is not None:
-            object.__setattr__(self, "request", _json_object(self.request, "request"))
+            object.__setattr__(
+                self, "request", _snapshot_object(self.request, "request", redact=True)
+            )
         if self.response is not None:
-            object.__setattr__(self, "response", _json_value(self.response, "response"))
+            object.__setattr__(
+                self, "response", _snapshot_value(self.response, "response", redact=True)
+            )
         if self.error is not None:
-            object.__setattr__(self, "error", _json_object(self.error, "error"))
+            object.__setattr__(self, "error", _snapshot_object(self.error, "error", redact=True))
 
     def to_dict(self) -> JsonObject:
-        """返回可直接交给 `json.dumps` 的稳定表示。"""
+        """返回可直接交给 `json.dumps` 的稳定表示（全新可变副本）。"""
         return {
             "status": self.status,
-            "request": self.request,
-            "response": self.response,
-            "error": self.error,
+            "request": None if self.request is None else _thaw_json(self.request),
+            "response": None if self.response is None else _thaw_json(self.response),
+            "error": None if self.error is None else _thaw_json(self.error),
         }
 
 
@@ -151,16 +203,18 @@ class CaseExecutionRequest:
             raise ValueError("case_id 不能为空")
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds 必须是有限正数")
-        object.__setattr__(self, "environment", _json_object(self.environment, "environment"))
-        object.__setattr__(self, "params", _json_object(self.params, "params"))
+        object.__setattr__(
+            self, "environment", _snapshot_object(self.environment, "environment", redact=False)
+        )
+        object.__setattr__(self, "params", _snapshot_object(self.params, "params", redact=False))
 
     def to_dict(self) -> JsonObject:
-        """返回可直接交给 `json.dumps` 的稳定表示。"""
+        """返回可直接交给 `json.dumps` 的稳定表示（全新可变副本）。"""
         return {
             "case_id": self.case_id,
             "assets_root": str(self.assets_root),
-            "environment": dict(self.environment),
-            "params": dict(self.params),
+            "environment": _thaw_json(self.environment),  # type: ignore[arg-type]
+            "params": _thaw_json(self.params),  # type: ignore[arg-type]
             "timeout_seconds": self.timeout_seconds,
         }
 
@@ -208,24 +262,29 @@ class StepOutcome:
             if self.skip_reason != "fail_fast":
                 raise ValueError("skipped 步骤的 skip_reason 必须为 fail_fast")
 
+        # S1：统一在构造期递归脱敏 request/response/error，再深冻结。
         if self.request is not None:
-            object.__setattr__(self, "request", _json_object(self.request, "request"))
+            object.__setattr__(
+                self, "request", _snapshot_object(self.request, "request", redact=True)
+            )
         if self.response is not None:
-            object.__setattr__(self, "response", _json_value(self.response, "response"))
+            object.__setattr__(
+                self, "response", _snapshot_value(self.response, "response", redact=True)
+            )
         if self.error is not None:
-            object.__setattr__(self, "error", _json_object(self.error, "error"))
+            object.__setattr__(self, "error", _snapshot_object(self.error, "error", redact=True))
 
     def to_dict(self) -> JsonObject:
-        """返回可直接交给 `json.dumps` 的稳定表示。"""
+        """返回可直接交给 `json.dumps` 的稳定表示（全新可变副本）。"""
         return {
             "step_id": self.step_id,
             "name": self.name,
             "type": self.type,
             "status": self.status,
             "duration_seconds": self.duration_seconds,
-            "request": self.request,
-            "response": self.response,
-            "error": self.error,
+            "request": None if self.request is None else _thaw_json(self.request),
+            "response": None if self.response is None else _thaw_json(self.response),
+            "error": None if self.error is None else _thaw_json(self.error),
             "output": self.output,
             "skip_reason": self.skip_reason,
         }
@@ -290,13 +349,13 @@ class CaseExecutionOutcome:
         return _compute_case_summary(self.steps)
 
     def to_dict(self) -> JsonObject:
-        """返回可直接交给 `json.dumps` 的稳定表示。"""
+        """返回可直接交给 `json.dumps` 的稳定表示（步骤与 summary 均为新副本）。"""
         return {
             "case_id": self.case_id,
             "status": self.status,
             "duration_seconds": self.duration_seconds,
             "steps": [step.to_dict() for step in self.steps],
-            "summary": self.summary,
+            "summary": dict(self.summary),
         }
 
 
@@ -324,7 +383,11 @@ class EnginePort(Protocol):
 def _validate_partial_outcome_consistency(
     kind: str, partial_outcome: CaseExecutionOutcome
 ) -> None:
-    """异常 kind 必须与 partial 中当前失败步骤的 error.kind 一致。"""
+    """异常 kind/stage 必须与 partial 中当前失败步骤的 error 一致。
+
+    P1：execution-stage 系统错误要求当前失败步 error.kind 匹配且 stage="execution"；
+    拒绝缺失/错误 stage、多个 failed、失败前 skipped、失败后非 skipped。
+    """
     failed_steps = [step for step in partial_outcome.steps if step.status == "failed"]
     if not failed_steps:
         raise ValueError("execution-stage partial_outcome 必须包含一个 failed 步骤")
@@ -337,6 +400,11 @@ def _validate_partial_outcome_consistency(
     if error_kind != kind:
         raise ValueError(
             f"异常 kind={kind} 与当前步骤 error.kind={error_kind!r} 不一致"
+        )
+    error_stage = error.get("stage")
+    if error_stage != "execution":
+        raise ValueError(
+            f"当前步骤 error.stage 必须为 execution，实际为 {error_stage!r}"
         )
     # 失败步之后必须全部 skipped，之前不得出现 skipped（第一批无条件跳过）。
     failed_index = partial_outcome.steps.index(current)
