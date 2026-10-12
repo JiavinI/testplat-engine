@@ -1,0 +1,21 @@
+schema_version: "0.2"
+id: case.demo.g6b_transport
+name: G6b 传输失败
+tags: [golden, g6b]
+params:
+  resource_name: demo
+steps:
+  - step_id: before
+    type: api
+    api_id: api.demo.create
+    params:
+      name: "${params.resource_name}"
+    output: created
+  - step_id: boom
+    type: api
+    api_id: api.demo.transport_target
+  - step_id: after
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "${created.body.id}"

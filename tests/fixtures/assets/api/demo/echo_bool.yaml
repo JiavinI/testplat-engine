@@ -1,0 +1,10 @@
+id: api.demo.echo_bool
+name: 回显布尔
+host: local
+method: POST
+url: /demo/echo
+request:
+  body:
+    value: "${value}"
+success:
+  status_code: 200

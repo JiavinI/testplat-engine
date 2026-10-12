@@ -1,0 +1,15 @@
+schema_version: "0.2"
+id: case.demo.g2_api_assert_failed
+name: G2 业务断言失败
+desc: 首步 API success 条件故意不满足，后续应 skipped
+tags: [golden, g2]
+steps:
+  - step_id: bad_assert
+    type: api
+    api_id: api.demo.always_fail_assert
+    output: ignored
+  - step_id: after
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "x"

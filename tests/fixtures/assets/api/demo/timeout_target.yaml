@@ -1,0 +1,8 @@
+id: api.demo.timeout_target
+name: 可控超时目标
+host: local
+method: GET
+url: /demo/timeout
+request: {}
+success:
+  status_code: 200

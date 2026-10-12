@@ -1,0 +1,24 @@
+schema_version: "0.2"
+id: case.demo.g4b_missing_runtime_path
+name: G4b 运行时路径缺失
+desc: alias 合法但响应无 created.body.missing
+tags: [golden, g4b]
+params:
+  resource_name: demo
+steps:
+  - step_id: create
+    type: api
+    api_id: api.demo.create
+    params:
+      name: "${params.resource_name}"
+    output: created
+  - step_id: consume
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "${created.body.missing}"
+  - step_id: after
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "x"

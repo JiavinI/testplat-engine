@@ -11,7 +11,8 @@
 - Phase 2.5 公共 `EnginePort.execute(request)` 协议、JSON DTO 和稳定系统异常
 - 真实实现：`SingleApiEngine`（消费 Control 已解析的 `environment`，不再猜测 `config_root`）
 
-当前基线不提供 Case 编排、重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。
+0.2 冻结 Case 公共 DTO、资产 schema 与校验契约；串行 CaseRunner / API StepExecutor 由后续提交接入同一 `execute` seam。
+仍不提供重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。兼容说明见 `docs/COMPATIBILITY-0.2.md`。
 
 ## 安装
 
@@ -67,7 +68,7 @@ src/testplat_engine/
 ├── adapters/       # 文件系统资产加载
 ├── domain/         # API 与结果模型
 ├── engine/         # 变量解析、断言和 SingleApiEngine
-├── interface.py    # 公共 EnginePort / DTO / 异常族
+├── interface.py    # 公共 EnginePort / API+Case DTO / 异常族
 ├── plugins/        # HTTP 客户端实现
 └── ports/          # HTTP 客户端抽象
 ```

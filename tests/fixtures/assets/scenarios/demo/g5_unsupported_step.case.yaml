@@ -1,0 +1,18 @@
+schema_version: "0.2"
+id: case.demo.g5_unsupported_step
+name: G5 不支持的步骤类型
+tags: [golden, g5]
+steps:
+  - step_id: first
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "1"
+    output: head
+  - step_id: ui_step
+    type: ui
+  - step_id: after
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "2"

@@ -1,0 +1,8 @@
+id: api.demo.always_fail_assert
+name: 故意断言失败
+host: local
+method: GET
+url: /status/200
+request: {}
+success:
+  status_code: 999

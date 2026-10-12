@@ -1,0 +1,10 @@
+schema_version: "0.2"
+id: case.demo.g4a_undeclared_alias
+name: G4a 未声明 alias
+tags: [golden, g4a]
+steps:
+  - step_id: only
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "${missing.body.id}"

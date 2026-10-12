@@ -1,0 +1,300 @@
+"""Case loader / validator 契约：G1–G6 加载与 M1–M8 拒绝。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+from testplat_engine.adapters.filesystem.case_loader import (
+    case_id_to_path,
+    load_case,
+    parse_case_dict,
+    validate_case_request_params,
+)
+from testplat_engine.adapters.filesystem.registry import Registry
+from testplat_engine.interface import (
+    AssetNotFoundError,
+    InvalidAssetError,
+    InvalidInputError,
+)
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "assets"
+
+
+def test_case_id_to_path_canonical_mapping() -> None:
+    path = case_id_to_path("case.demo.example", FIXTURES)
+    assert path == (FIXTURES / "scenarios" / "demo" / "example.case.yaml").resolve()
+
+
+def test_g1_success_loads_with_stable_order() -> None:
+    case = load_case("case.demo.g1_success", FIXTURES)
+    assert case.id == "case.demo.g1_success"
+    assert case.schema_version == "0.2"
+    assert [s.step_id for s in case.steps] == ["create", "get"]
+    assert case.steps[0].output == "created"
+    assert case.steps[1].output is None
+    assert "created.body.id" in case.steps[1].params["resource_id"]
+    merged = validate_case_request_params(case, {})
+    assert merged["resource_name"] == "demo"
+
+
+def test_g2_g3_g4b_g6_load_ok() -> None:
+    for case_id, step_count in [
+        ("case.demo.g2_api_assert_failed", 2),
+        ("case.demo.g3_typed_propagation", 3),
+        ("case.demo.g4b_missing_runtime_path", 3),
+        ("case.demo.g6a_timeout", 3),
+        ("case.demo.g6b_transport", 3),
+    ]:
+        case = load_case(case_id, FIXTURES)
+        assert len(case.steps) == step_count
+        assert case.id == case_id
+
+
+def test_g4a_undeclared_alias_invalid_asset() -> None:
+    with pytest.raises(InvalidAssetError) as exc_info:
+        load_case("case.demo.g4a_undeclared_alias", FIXTURES)
+    err = exc_info.value
+    assert err.kind == "invalid_asset"
+    assert err.stage == "preflight"
+    assert "alias" in err.public_message.lower() or "未声明" in err.public_message
+
+
+def test_g5_unsupported_step_type_invalid_asset() -> None:
+    with pytest.raises(InvalidAssetError) as exc_info:
+        load_case("case.demo.g5_unsupported_step", FIXTURES)
+    err = exc_info.value
+    assert err.kind == "invalid_asset"
+    assert err.stage == "preflight"
+    assert "ui" in err.public_message
+
+
+def test_m1_duplicate_step_id() -> None:
+    data = {
+        "schema_version": "0.2",
+        "id": "case.demo.m1",
+        "steps": [
+            {"step_id": "dup", "type": "api", "api_id": "api.demo.get"},
+            {"step_id": "dup", "type": "api", "api_id": "api.demo.get"},
+        ],
+    }
+    with pytest.raises(InvalidAssetError) as ei:
+        parse_case_dict(data)
+    assert ei.value.kind == "invalid_asset"
+    assert ei.value.stage == "preflight"
+    assert "step_id" in ei.value.public_message
+
+
+def test_m2_duplicate_output() -> None:
+    data = {
+        "schema_version": "0.2",
+        "id": "case.demo.m2",
+        "steps": [
+            {"step_id": "a", "type": "api", "api_id": "api.demo.get", "output": "x"},
+            {"step_id": "b", "type": "api", "api_id": "api.demo.get", "output": "x"},
+        ],
+    }
+    with pytest.raises(InvalidAssetError) as ei:
+        parse_case_dict(data)
+    assert ei.value.kind == "invalid_asset"
+    assert "output" in ei.value.public_message
+
+
+def test_m3_forward_reference() -> None:
+    data = {
+        "schema_version": "0.2",
+        "id": "case.demo.m3",
+        "steps": [
+            {
+                "step_id": "a",
+                "type": "api",
+                "api_id": "api.demo.get",
+                "params": {"id": "${later.body.id}"},
+            },
+            {"step_id": "b", "type": "api", "api_id": "api.demo.get", "output": "later"},
+        ],
+    }
+    with pytest.raises(InvalidAssetError) as ei:
+        parse_case_dict(data)
+    assert ei.value.kind == "invalid_asset"
+    assert ei.value.stage == "preflight"
+
+
+def test_m4_unknown_fields_rejected() -> None:
+    with pytest.raises(InvalidAssetError) as top:
+        parse_case_dict(
+            {
+                "schema_version": "0.2",
+                "id": "case.demo.m4",
+                "metadata": {"owner": "x"},
+                "steps": [{"step_id": "a", "type": "api", "api_id": "api.demo.get"}],
+            }
+        )
+    assert top.value.kind == "invalid_asset"
+    assert "metadata" in top.value.public_message
+
+    with pytest.raises(InvalidAssetError) as step:
+        parse_case_dict(
+            {
+                "schema_version": "0.2",
+                "id": "case.demo.m4b",
+                "steps": [
+                    {
+                        "step_id": "a",
+                        "type": "api",
+                        "api_id": "api.demo.get",
+                        "assert": {"status_code": 200},
+                        "kind": "api",
+                    }
+                ],
+            }
+        )
+    assert step.value.kind == "invalid_asset"
+    msg = step.value.public_message
+    assert "assert" in msg or "kind" in msg
+
+
+def test_m5_omit_output_is_valid() -> None:
+    case = load_case("case.demo.m5_omit_output", FIXTURES)
+    assert case.steps[0].output is None
+
+
+def test_m6_steps_index_ref_rejected() -> None:
+    data = {
+        "schema_version": "0.2",
+        "id": "case.demo.m6",
+        "steps": [
+            {
+                "step_id": "a",
+                "type": "api",
+                "api_id": "api.demo.get",
+                "params": {"id": "${steps.0.response.body.id}"},
+            }
+        ],
+    }
+    with pytest.raises(InvalidAssetError) as ei:
+        parse_case_dict(data)
+    assert ei.value.kind == "invalid_asset"
+    assert "下标" in ei.value.public_message or "steps" in ei.value.public_message
+
+
+def test_m7_file_id_mismatch() -> None:
+    raw = yaml.safe_load(
+        (FIXTURES / "scenarios" / "demo" / "g1_success.case.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    with pytest.raises(InvalidAssetError) as ei:
+        parse_case_dict(raw, expected_case_id="case.demo.other")
+    assert ei.value.kind == "invalid_asset"
+    assert ei.value.stage == "preflight"
+    assert "不一致" in ei.value.public_message
+
+
+def test_m8_missing_params_invalid_input() -> None:
+    case = load_case("case.demo.m8_missing_params", FIXTURES)
+    with pytest.raises(InvalidInputError) as ei:
+        validate_case_request_params(case, {})
+    err = ei.value
+    assert err.kind == "invalid_input"
+    assert err.stage == "preflight"
+    assert "params.missing" in err.public_message
+
+
+def test_m8_missing_params_satisfied_by_request_override() -> None:
+    case = load_case("case.demo.m8_missing_params", FIXTURES)
+    merged = validate_case_request_params(case, {"missing": "ok"})
+    assert merged["missing"] == "ok"
+
+
+def test_asset_not_found() -> None:
+    with pytest.raises(AssetNotFoundError) as ei:
+        load_case("case.demo.does_not_exist", FIXTURES)
+    assert ei.value.kind == "asset_not_found"
+    assert ei.value.stage == "preflight"
+
+
+def test_registry_load_case() -> None:
+    registry = Registry(FIXTURES)
+    case = registry.load_case("case.demo.g1_success")
+    assert case.steps[0].api_id == "api.demo.create"
+
+
+def test_rejects_old_aliases_use_with_arrow() -> None:
+    with pytest.raises(InvalidAssetError) as ei:
+        parse_case_dict(
+            {
+                "schema_version": "0.2",
+                "id": "case.demo.old",
+                "steps": [
+                    {
+                        "step_id": "a",
+                        "type": "api",
+                        "api_id": "api.demo.get",
+                        "use": "api.demo.get",
+                        "with": {},
+                        "->": "alias",
+                    }
+                ],
+            }
+        )
+    assert ei.value.kind == "invalid_asset"
+
+
+def test_self_reference_via_own_output_is_forward() -> None:
+    """步骤引用自己的 output 属于前向/自引用，必须拒绝。"""
+    data = {
+        "schema_version": "0.2",
+        "id": "case.demo.self",
+        "steps": [
+            {
+                "step_id": "a",
+                "type": "api",
+                "api_id": "api.demo.get",
+                "params": {"id": "${mine.body.id}"},
+                "output": "mine",
+            }
+        ],
+    }
+    with pytest.raises(InvalidAssetError):
+        parse_case_dict(data)
+
+
+# --- 运行期 handoff：明确标记 pending，不得用伪实现制造通过 ---
+
+@pytest.mark.parametrize(
+    "case_id,expectation",
+    [
+        (
+            "case.demo.g1_success",
+            "pending Agent2: Case success; summary 2/2/0/0; 无重复 output 快照",
+        ),
+        (
+            "case.demo.g2_api_assert_failed",
+            "pending Agent2: Case failed; 首步 assertion; 后步 skipped; summary 2/0/1/1",
+        ),
+        (
+            "case.demo.g3_typed_propagation",
+            "pending Agent2: 整字段占位符保持 JSON 类型",
+        ),
+        (
+            "case.demo.g4b_missing_runtime_path",
+            "pending Agent2: variable_resolution; request=null; 后续 skipped",
+        ),
+        (
+            "case.demo.g6a_timeout",
+            "pending Agent2: EngineTimeoutError + partial_outcome",
+        ),
+        (
+            "case.demo.g6b_transport",
+            "pending Agent2: EngineTransportError + partial_outcome",
+        ),
+    ],
+)
+def test_runtime_expectations_pending_handoff(case_id: str, expectation: str) -> None:
+    """加载契约已绿；运行期由 Agent 2 兑现，此处只固定 handoff 文案可追踪。"""
+    case = load_case(case_id, FIXTURES)
+    assert case.id == case_id
+    assert expectation.startswith("pending Agent2:")
