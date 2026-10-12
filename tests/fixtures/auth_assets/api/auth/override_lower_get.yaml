@@ -1,0 +1,11 @@
+id: api.auth.override_lower_get
+name: 资产 header 与凭证仅大小写不同
+host: echo
+method: GET
+url: /echo/headers
+auth: admin
+request:
+  headers:
+    authorization: "Bearer public-placeholder"
+success:
+  status_code: 200

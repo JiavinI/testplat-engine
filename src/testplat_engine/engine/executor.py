@@ -24,12 +24,20 @@ from testplat_engine.domain.api import Api
 from testplat_engine.domain.result import ApiResult
 from testplat_engine.engine.api_step_executor import ApiStepExecutor
 from testplat_engine.engine.assert_engine import check_success
+from testplat_engine.engine.auth_injection import (
+    ResolvedAuth,
+    merge_headers,
+    public_auth,
+    resolve_identity,
+    secret_values,
+)
 from testplat_engine.engine.case_runner import CaseRunner
 from testplat_engine.engine.resolver import resolve_variables
 from testplat_engine.interface import (
     ApiExecutionOutcome,
     ApiExecutionRequest,
     AssetNotFoundError,
+    AuthTable,
     CaseExecutionOutcome,
     CaseExecutionRequest,
     EngineError,
@@ -46,20 +54,18 @@ from testplat_engine.interface import (
 from testplat_engine.plugins.httpx_client import HttpxClient
 from testplat_engine.ports.http_client import HttpClient, HttpResponse
 from testplat_engine.ports.step_executor import StepExecutorRegistry
+from testplat_engine.shared.redact import (
+    is_sensitive_key,
+    redact_json,
+    redact_secret_text,
+    redact_secret_values,
+)
 
 logger = logging.getLogger(__name__)
 
-# 公开结果中必须脱敏的请求/响应头；完整值只允许进入日志链路。
-_SENSITIVE_HEADER_NAMES = frozenset(
-    {
-        "authorization",
-        "proxy-authorization",
-        "cookie",
-        "set-cookie",
-        "x-api-key",
-        "api-key",
-    }
-)
+# 请求/响应头的敏感名单只有一个来源：shared.redact._SENSITIVE_KEYS（H1）。
+# 敏感头的值不进入公开结果，也**不进入日志**：本模块任何日志都不记录 header 值，
+# 只记 kind、stage、异常类型名（旧注释声称完整值可进入日志，与日志硬约束矛盾，已改正）。
 
 
 class SingleApiEngine:
@@ -122,14 +128,21 @@ class SingleApiEngine:
             environment=_thaw_json(request.environment),  # type: ignore[arg-type]
             case_params=case_params,
             timeout_seconds=request.timeout_seconds,
+            auth=request.auth,  # H2：身份表逐层下传，CaseRunner 本身不解析身份
         )
 
     def preflight_api(
-        self, api_id: str, assets_root: Path, environment: Mapping[str, JsonValue]
+        self,
+        api_id: str,
+        assets_root: Path,
+        environment: Mapping[str, JsonValue],
+        *,
+        auth: AuthTable | None = None,
     ) -> None:
-        """只做资产加载与 host 解析，不发请求；供 Case 在执行前整体预检。"""
+        """只做资产加载、host 与身份解析，不发请求；供 Case 在执行前整体预检。"""
         api = self._load_api(api_id, assets_root)
         self._resolve_base_url(api, environment)
+        resolve_identity(api, auth)
 
     async def execute_api(
         self, request: ApiExecutionRequest, *, preserve_param_types: bool = False
@@ -145,10 +158,15 @@ class SingleApiEngine:
         public_request: JsonObject | None = None
         # 已分类异常；finally 中 close 失败时不得覆盖它。
         classified: EngineError | None = None
+        # 本次执行的按值替换集合；只在本次调用的栈帧内存活，不挂到 self 上，避免跨请求串号。
+        secrets: tuple[str, ...] = ()
 
         try:
             api = self._load_api(request.api_id, request.assets_root)
             base_url = self._resolve_base_url(api, request.environment)
+            # 身份解析属于预检：失败抛 invalid_environment，此时尚未发出任何请求。
+            resolved_auth = resolve_identity(api, request.auth)
+            secrets = secret_values(resolved_auth)
             full_url = f"{base_url}{api.url}"
             if preserve_param_types:
                 # 冻结快照含 tuple/MappingProxy，渲染前解冻以便整字段占位符回填纯 JSON。
@@ -157,12 +175,20 @@ class SingleApiEngine:
                 )
             else:
                 resolved = resolve_variables(api, dict(request.params))
-            public_request = self._build_public_request(
-                method=resolved["method"],
-                url=full_url,
-                headers=resolved.get("headers"),
-                body=resolved.get("body"),
+            send_headers, public_headers, overridden = merge_headers(
+                resolved.get("headers"), resolved_auth
             )
+            public_request = self._redact_values(
+                self._build_public_request(
+                    method=resolved["method"],
+                    url=full_url,
+                    headers=public_headers,
+                    body=resolved.get("body"),
+                    extra_sensitive=self._injected_names(resolved_auth),
+                ),
+                secrets,
+            )
+            auth_info = public_auth(resolved_auth, overridden)
 
             # 先拿到 HTTP client；_acquire_client 失败仍属 preflight/internal-preflight。
             # 仅在 client 就绪后、真实 HTTP 调用前切换到 execution。
@@ -172,10 +198,16 @@ class SingleApiEngine:
                 method=resolved["method"],
                 url=full_url,
                 json=resolved.get("body"),
-                headers=resolved.get("headers"),
+                # 注入点：凭证只出现在本次调用的 headers 参数里，不修改 client 的共享状态。
+                headers=send_headers,
                 timeout=request.timeout_seconds,
             )
-            public_response = self._build_public_response(response)
+            public_response = self._redact_values(
+                self._build_public_response(
+                    response, extra_sensitive=self._injected_names(resolved_auth)
+                ),
+                secrets,
+            )
             success = check_success(response, resolved.get("success", api.success))
 
             if success:
@@ -183,6 +215,7 @@ class SingleApiEngine:
                     status="success",
                     request=public_request,
                     response=public_response,
+                    auth=auth_info,
                 )
 
             # 断言失败是业务结果，不是系统异常；Control 应记为 HTTP 200 + failed。
@@ -194,14 +227,15 @@ class SingleApiEngine:
                     "kind": "assertion",
                     "message": "断言失败: 响应不符合成功条件",
                 },
+                auth=auth_info,
             )
 
         except EngineError as exc:
             # 已分类异常直接上抛，避免再次包装丢失 kind/stage。
-            classified = exc
+            classified = self._redact_error(exc, secrets)
             raise
         except Exception as exc:
-            classified = self._map_exception(exc, stage)
+            classified = self._redact_error(self._map_exception(exc, stage), secrets)
             # 日志只写安全字段：原始异常文本（可能夹带 password/token/Cookie 值）
             # 与 traceback（exc_info 会格式化异常消息）一律不进日志；
             # 完整原因仅保留在 classified.log_reason 与 __cause__ 链上，由调用方自行决策。
@@ -229,11 +263,15 @@ class SingleApiEngine:
                             type(close_exc).__name__,
                         )
                     else:
-                        raise EngineInternalError(
-                            stage,
-                            log_reason=(
-                                f"client.close failed: {type(close_exc).__name__}: {close_exc}"
+                        raise self._redact_error(
+                            EngineInternalError(
+                                stage,
+                                log_reason=(
+                                    f"client.close failed: {type(close_exc).__name__}: "
+                                    f"{close_exc}"
+                                ),
                             ),
+                            secrets,
                         ) from close_exc
 
     def _acquire_client(self) -> tuple[HttpClient, bool]:
@@ -293,6 +331,37 @@ class SingleApiEngine:
             log_reason=f"{type(exc).__name__}: {exc}",
         )
 
+    @staticmethod
+    def _injected_names(resolved_auth: ResolvedAuth | None) -> frozenset[str]:
+        """本次注入的 header 名（小写）；不论是否在敏感名单中，都按敏感处理（H1）。"""
+        if resolved_auth is None:
+            return frozenset()
+        return frozenset(name.lower() for name in resolved_auth.header_names)
+
+    @staticmethod
+    def _redact_values(snapshot: JsonObject, secrets: tuple[str, ...]) -> JsonObject:
+        """按值替换：在按键脱敏**之后**执行，覆盖嵌套字符串中的子串。"""
+        if not secrets:
+            return snapshot
+        keyed = redact_json(snapshot)
+        result = redact_secret_values(keyed, secrets)
+        assert isinstance(result, dict)
+        return result
+
+    @staticmethod
+    def _redact_error(error: EngineError, secrets: tuple[str, ...]) -> EngineError:
+        """已分类异常的 public_message / log_reason 也做按值替换。
+
+        正常路径下二者本就不含秘密（固定文案 + 类型名）；这里兜底防止底层异常文本
+        （例如 httpx 错误描述）夹带凭证后经 log_reason 被调用方误用。
+        """
+        if not secrets:
+            return error
+        error.public_message = redact_secret_text(error.public_message, secrets)
+        if error.log_reason is not None:
+            error.log_reason = redact_secret_text(error.log_reason, secrets)
+        return error
+
     def _build_public_request(
         self,
         *,
@@ -300,31 +369,40 @@ class SingleApiEngine:
         url: str,
         headers: Any,
         body: Any,
+        extra_sensitive: frozenset[str] = frozenset(),
     ) -> JsonObject:
-        """构造可 JSON 序列化且已脱敏的公开请求快照。"""
+        """构造可 JSON 序列化且已按名脱敏的公开请求快照（按值替换由调用方叠加）。"""
         return {
             "method": method,
             "url": url,
-            "headers": self._sanitize_headers(headers),
+            "headers": self._sanitize_headers(headers, extra_sensitive),
             "body": self._json_safe(body),
         }
 
-    def _build_public_response(self, response: HttpResponse) -> JsonObject:
-        """构造可 JSON 序列化且已脱敏的公开响应快照。"""
+    def _build_public_response(
+        self, response: HttpResponse, *, extra_sensitive: frozenset[str] = frozenset()
+    ) -> JsonObject:
+        """构造可 JSON 序列化且已按名脱敏的公开响应快照（按值替换由调用方叠加）。"""
         return {
             "status_code": response.status_code,
-            "headers": self._sanitize_headers(response.headers),
+            "headers": self._sanitize_headers(response.headers, extra_sensitive),
             "body": self._json_safe(response.body),
         }
 
-    def _sanitize_headers(self, headers: Any) -> JsonObject:
-        """复制请求/响应头，敏感名替换为占位符，避免 Authorization/Cookie 泄漏。"""
+    def _sanitize_headers(
+        self, headers: Any, extra_sensitive: frozenset[str] = frozenset()
+    ) -> JsonObject:
+        """复制请求/响应头，敏感名替换为占位符。
+
+        敏感名 = 统一名单（``is_sensitive_key``）∪ 本次注入的凭证头名（``extra_sensitive``，
+        小写）。后者让 ``X-Tenant-Token`` 这类自定义凭证头同样被遮蔽。
+        """
         if not isinstance(headers, Mapping):
             return {}
         sanitized: JsonObject = {}
         for key, value in headers.items():
             name = str(key)
-            if name.lower() in _SENSITIVE_HEADER_NAMES:
+            if is_sensitive_key(name) or name.lower() in extra_sensitive:
                 sanitized[name] = "***"
             else:
                 sanitized[name] = str(value)

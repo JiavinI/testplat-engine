@@ -1,0 +1,19 @@
+schema_version: "0.2"
+id: case.auth.auth_mixed
+name: 身份交替
+steps:
+  - step_id: s1_admin
+    type: api
+    api_id: api.auth.admin_get
+  - step_id: s2_partner
+    type: api
+    api_id: api.auth.partner_get
+  - step_id: s3_none
+    type: api
+    api_id: api.auth.none_get
+  - step_id: s4_admin
+    type: api
+    api_id: api.auth.admin_get
+  - step_id: s5_default
+    type: api
+    api_id: api.auth.default_get

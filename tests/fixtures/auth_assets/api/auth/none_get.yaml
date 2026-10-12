@@ -1,0 +1,8 @@
+id: api.auth.none_get
+name: 显式匿名
+host: echo
+method: GET
+url: /echo/headers
+auth: none
+success:
+  status_code: 200

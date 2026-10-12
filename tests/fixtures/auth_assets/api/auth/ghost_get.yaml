@@ -1,0 +1,8 @@
+id: api.auth.ghost_get
+name: 未知身份
+host: echo
+method: GET
+url: /echo/headers
+auth: ghost
+success:
+  status_code: 200

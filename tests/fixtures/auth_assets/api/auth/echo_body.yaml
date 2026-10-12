@@ -1,0 +1,11 @@
+id: api.auth.echo_body
+name: 回显请求体
+host: echo
+method: POST
+url: /echo/body
+auth: none
+request:
+  body:
+    value: "${value}"
+success:
+  status_code: 200

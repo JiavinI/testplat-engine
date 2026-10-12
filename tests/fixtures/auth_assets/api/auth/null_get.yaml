@@ -1,0 +1,8 @@
+id: api.auth.null_get
+name: auth 为 null 等同未声明
+host: echo
+method: GET
+url: /echo/headers
+auth: null
+success:
+  status_code: 200

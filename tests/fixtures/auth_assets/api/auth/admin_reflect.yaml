@@ -1,0 +1,8 @@
+id: api.auth.admin_reflect
+name: 响应头回显秘密
+host: echo
+method: GET
+url: /echo/header-reflect
+auth: admin
+success:
+  status_code: 200

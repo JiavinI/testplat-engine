@@ -1,0 +1,8 @@
+id: api.auth.empty_auth
+name: auth 为空串
+host: echo
+method: GET
+url: /echo/headers
+auth: ""
+success:
+  status_code: 200

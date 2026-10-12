@@ -1,0 +1,13 @@
+schema_version: "0.2"
+id: case.auth.auth_alias
+name: alias 引用回显的凭证
+steps:
+  - step_id: leak
+    type: api
+    api_id: api.auth.admin_get
+    output: echoed
+  - step_id: use
+    type: api
+    api_id: api.auth.echo_body
+    params:
+      value: "${echoed.body.echo.value}"

@@ -50,6 +50,9 @@ class Api:
     host: str
     request: dict[str, Any]
     success: dict[str, Any]
+    # 3.3a：身份声明。None=未声明（走 default_identity）；"none"=显式匿名；其余为身份名。
+    # 只存身份名，资产里永远不出现秘密。
+    auth: str | None = None
 
     def __post_init__(self) -> None:
         """初始化后验证
@@ -80,6 +83,10 @@ class Api:
 
         if not self.host:
             raise ValueError("API host 不能为空")
+
+        if self.auth is not None and (not isinstance(self.auth, str) or not self.auth.strip()):
+            # Q6：空串或非字符串不是合法身份声明；消息不回显值。
+            raise ValueError("API auth 必须是非空字符串身份名或 none")
 
         # 规范化 method 为大写
         object.__setattr__(self, 'method', self.method.upper())

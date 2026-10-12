@@ -1,0 +1,12 @@
+id: api.auth.override_get
+name: 资产 header 与凭证同名
+host: echo
+method: GET
+url: /echo/headers
+auth: admin
+request:
+  headers:
+    Authorization: "Bearer public-placeholder"
+    X-Trace: trace-2
+success:
+  status_code: 200
