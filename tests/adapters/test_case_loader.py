@@ -262,42 +262,8 @@ def test_self_reference_via_own_output_is_forward() -> None:
         parse_case_dict(data)
 
 
-# --- 运行期 handoff：明确标记 pending，不得用伪实现制造通过 ---
-
-@pytest.mark.parametrize(
-    "case_id,expectation",
-    [
-        (
-            "case.demo.g1_success",
-            "pending Agent2: Case success; summary 2/2/0/0; 无重复 output 快照",
-        ),
-        (
-            "case.demo.g2_api_assert_failed",
-            "pending Agent2: Case failed; 首步 assertion; 后步 skipped; summary 2/0/1/1",
-        ),
-        (
-            "case.demo.g3_typed_propagation",
-            "pending Agent2: 整字段占位符保持 JSON 类型",
-        ),
-        (
-            "case.demo.g4b_missing_runtime_path",
-            "pending Agent2: variable_resolution; request=null; 后续 skipped",
-        ),
-        (
-            "case.demo.g6a_timeout",
-            "pending Agent2: EngineTimeoutError + partial_outcome",
-        ),
-        (
-            "case.demo.g6b_transport",
-            "pending Agent2: EngineTransportError + partial_outcome",
-        ),
-    ],
-)
-def test_runtime_expectations_pending_handoff(case_id: str, expectation: str) -> None:
-    """加载契约已绿；运行期由 Agent 2 兑现，此处只固定 handoff 文案可追踪。"""
-    case = load_case(case_id, FIXTURES)
-    assert case.id == case_id
-    assert expectation.startswith("pending Agent2:")
+# 运行期 G1–G6 / M8 的真实结果由 tests/engine/test_case_golden.py 经公开
+# execute(CaseExecutionRequest) 验证；此处只保留加载契约（不再有 pending 占位）。
 
 
 # --- S2 / S3 / P2 / P4：loader 修复回归 ---

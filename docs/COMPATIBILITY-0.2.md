@@ -10,7 +10,7 @@
 3. **公开异常族扩展而非替换**：保留 `asset_not_found` / `invalid_asset` / `invalid_environment` / `timeout` / `transport` / `unavailable` / `internal`；新增：
    - `invalid_input`（stage=`preflight`）：Case 参数在执行前可判定缺失等输入错误；Control 后续映射 HTTP 422。
 4. **execution-stage 异常可携带 `partial_outcome`**：仅 Case 执行中途的 timeout / transport / internal；preflight 异常不得伪造执行结果。`to_dict()` 在存在时包含安全可序列化的 `partial_outcome`。
-5. **`create_engine()` / `SingleApiEngine`**：本批仍以单 API 执行为主；Case 运行期由后续 Agent 接入同一 `execute` seam。调用方应以请求类型判别，而不是依赖第二个公开入口。
+5. **`create_engine()` / `SingleApiEngine`**：`execute(request)` 现按请求类型判别——`ApiExecutionRequest` 走 0.1 单 API 路径（字符串插值语义不变），`CaseExecutionRequest` 走串行 `CaseRunner`（`api` 步骤复用同一单 API Module，整字段占位符保持 JSON 类型）。仍是唯一公开入口。
 
 ## 新增公共表面
 

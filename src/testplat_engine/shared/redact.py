@@ -54,6 +54,26 @@ def redact_json(value: Any) -> Any:
     return str(value)
 
 
+def strip_sensitive_json(value: Any) -> Any:
+    """递归**移除**敏感键（而非替换为占位符），供 alias 绑定使用。
+
+    为什么不复用 ``redact_json``：占位符 ``***`` 会作为"合法值"流入后续步骤，
+    把"秘密被隐藏"伪装成"下游拿到了一个字符串"。移除后，对应路径在下游引用时
+    表现为缺失，由 CaseRunner 报告稳定的 ``variable_resolution`` 失败。
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [strip_sensitive_json(item) for item in value]
+    if isinstance(value, Mapping):
+        return {
+            str(key): strip_sensitive_json(item)
+            for key, item in value.items()
+            if not is_sensitive_key(str(key))
+        }
+    return str(value)
+
+
 def safe_response_for_alias(response: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """构造可绑定到 alias 的安全响应对象。
 

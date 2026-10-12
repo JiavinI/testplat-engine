@@ -3,6 +3,9 @@ name: 查询资源
 host: local
 method: GET
 url: /demo/resources/item
-request: {}
+request:
+  headers:
+    # 让"后一步确实收到前一步 alias 值"在请求侧可观察（本地 server 记录该头）。
+    X-Resource-Id: "${resource_id}"
 success:
   status_code: 200

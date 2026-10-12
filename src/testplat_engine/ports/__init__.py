@@ -6,6 +6,7 @@ HTTP 客户端端口供插件实现；StepExecutor 供 CaseRunner 注册步骤�
 
 from testplat_engine.ports.http_client import HttpClient, HttpResponse
 from testplat_engine.ports.step_executor import (
+    PreflightableStepExecutor,
     StepExecutionContext,
     StepExecutor,
     StepExecutorRegistry,
@@ -15,6 +16,7 @@ from testplat_engine.ports.step_executor import (
 __all__ = [
     "HttpClient",
     "HttpResponse",
+    "PreflightableStepExecutor",
     "StepExecutionContext",
     "StepExecutor",
     "StepExecutorRegistry",
