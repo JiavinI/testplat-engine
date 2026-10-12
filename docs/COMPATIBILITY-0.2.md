@@ -11,6 +11,8 @@
    - `invalid_input`（stage=`preflight`）：Case 参数在执行前可判定缺失等输入错误；Control 后续映射 HTTP 422。
 4. **execution-stage 异常可携带 `partial_outcome`**：仅 Case 执行中途的 timeout / transport / internal；preflight 异常不得伪造执行结果。`to_dict()` 在存在时包含安全可序列化的 `partial_outcome`。
 5. **`create_engine()` / `SingleApiEngine`**：`execute(request)` 现按请求类型判别——`ApiExecutionRequest` 走 0.1 单 API 路径（字符串插值语义不变），`CaseExecutionRequest` 走串行 `CaseRunner`（`api` 步骤复用同一单 API Module，整字段占位符保持 JSON 类型）。仍是唯一公开入口。
+6. **`CaseExecutionRequest.timeout_seconds` 是每步骤 HTTP 超时，不是 Case 总预算**：该值（有限正数，默认 30 秒）原样传给 Case 中**每个** `api` 步骤的 HTTP 调用，各步骤独立计时。N 个步骤的 Case 最坏耗时可达 `N × timeout_seconds` 量级；Engine 不提供 Case 级总超时，需要整体限时的调用方（Control）应在外层自行施加。任一步骤超时按 `timeout`（stage=`execution`）上抛，并携带 `partial_outcome`。
+7. **日志不含系统异常原文**：Engine 日志只记录 kind、stage、case id、step id 与异常类型名；`log_reason` 与 traceback 不写入日志、公开结果或持久化记录（`log_reason` 仅保留在异常对象上供调用方决策）。
 
 ## 新增公共表面
 

@@ -114,7 +114,7 @@ class CaseRunner:
                     "execution", log_reason=f"alias shape mismatch: {exc}"
                 )
                 raise self._attribute_system_error(
-                    wrapped, case, index, outcomes, step_started, started
+                    wrapped, case, index, outcomes, step_started, started, origin=exc
                 ) from exc
             except Exception as exc:
                 # 未预期的缺陷：保持 internal/execution，归属当前步骤。
@@ -122,7 +122,7 @@ class CaseRunner:
                     "execution", log_reason=f"{type(exc).__name__}: {exc}"
                 )
                 raise self._attribute_system_error(
-                    wrapped, case, index, outcomes, step_started, started
+                    wrapped, case, index, outcomes, step_started, started, origin=exc
                 ) from exc
 
             outcomes.append(outcome)
@@ -271,15 +271,22 @@ class CaseRunner:
         completed: list[StepOutcome],
         step_started: float,
         case_started: float,
+        origin: BaseException | None = None,
     ) -> EngineError:
         """把系统错误归属到当前步骤，返回携带安全 partial_outcome 的同 kind 异常。
 
         - 已完成步骤原样保留；当前步骤 failed；其后全部 skipped。
         - Case 已开始后，preflight 阶段的异常（只可能是 TOCTOU 或 executor 缺陷）
           统一收敛为 internal/execution，保证异常与 partial 的 kind/stage 一致。
-        - ``log_reason`` 只进日志链路，不进入 partial_outcome / 外显 payload。
+        - ``log_reason`` 只保留在异常对象上，不进入 partial_outcome / 外显 payload，
+          也不写日志；日志只记异常类型名。
+        - ``origin`` 是触发本次归属的原始异常（用于取类型名）；缺省时取
+          ``exc.__cause__``（executor 层 ``raise classified from exc`` 留下的原始异常），
+          再退回 ``exc`` 自身。
         """
         step = case.steps[index]
+        source = origin if origin is not None else (exc.__cause__ or exc)
+        origin_type = type(source).__name__
         if exc.stage == "execution" and exc.kind in ("timeout", "transport", "internal"):
             kind, public_message, log_reason = exc.kind, exc.public_message, exc.log_reason
         else:
@@ -302,12 +309,14 @@ class CaseRunner:
             duration_seconds=time.perf_counter() - case_started,
             steps=(*completed, failed, *self._skipped(case.steps[index + 1 :])),
         )
+        # 日志不得包含 log_reason / traceback：它们可能带有 password/token/Cookie 原值。
+        # 只保留定位所需的安全信息：case、step、kind、stage、原始异常的类型名。
         logger.error(
-            "case step system error case=%s step=%s kind=%s stage=execution reason=%s",
+            "case step system error case=%s step=%s kind=%s stage=execution exc_type=%s",
             case.id,
             step.step_id,
             kind,
-            log_reason,
+            origin_type,
         )
         if kind == "timeout":
             return EngineTimeoutError(

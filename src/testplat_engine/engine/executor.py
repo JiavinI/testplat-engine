@@ -202,12 +202,14 @@ class SingleApiEngine:
             raise
         except Exception as exc:
             classified = self._map_exception(exc, stage)
+            # 日志只写安全字段：原始异常文本（可能夹带 password/token/Cookie 值）
+            # 与 traceback（exc_info 会格式化异常消息）一律不进日志；
+            # 完整原因仅保留在 classified.log_reason 与 __cause__ 链上，由调用方自行决策。
             logger.error(
-                "engine execute failed kind=%s stage=%s reason=%s",
+                "engine execute failed kind=%s stage=%s exc_type=%s",
                 classified.kind,
                 classified.stage,
-                classified.log_reason,
-                exc_info=exc,
+                type(exc).__name__,
             )
             raise classified from exc
         finally:
@@ -218,11 +220,13 @@ class SingleApiEngine:
                     await client.close()  # type: ignore[misc]
                 except Exception as close_exc:
                     if classified is not None:
+                        # 只记异常类型名，不记 close 异常文本（同样可能含敏感值）。
                         logger.warning(
-                            "http client close failed after classified error kind=%s stage=%s: %s",
+                            "http client close failed after classified error "
+                            "kind=%s stage=%s exc_type=%s",
                             classified.kind,
                             classified.stage,
-                            close_exc,
+                            type(close_exc).__name__,
                         )
                     else:
                         raise EngineInternalError(

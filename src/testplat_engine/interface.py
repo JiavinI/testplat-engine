@@ -190,6 +190,11 @@ class CaseExecutionRequest:
     """Case 执行输入；fail-fast 固定开启，调用方不可覆盖。
 
     Control 只传身份、资产根、已解析环境和可覆盖参数；不携带 ORM/Web 对象。
+
+    ``timeout_seconds`` 的语义是**每个步骤**的 HTTP 超时（秒，有限正数），
+    会原样传给每个 ``api`` 步骤的 HTTP client；它**不是**整个 Case 的总时长预算。
+    N 个步骤的 Case 最坏耗时可达 ``N * timeout_seconds`` 量级；如需整体限时，
+    由调用方（Control）自行在外层施加，Engine 不提供 Case 级超时。
     """
 
     case_id: str

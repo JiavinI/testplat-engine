@@ -7,13 +7,14 @@ from pathlib import Path
 import pytest
 
 from testplat_engine.domain.case import CaseStep
+from testplat_engine.engine.case_context import bind_alias_response
 from testplat_engine.interface import StepOutcome
 from testplat_engine.ports.step_executor import (
     StepExecutionContext,
     StepExecutorRegistry,
     UnknownStepTypeError,
 )
-from testplat_engine.shared.redact import redact_json, safe_response_for_alias
+from testplat_engine.shared.redact import redact_json
 
 
 class _FakeApiExecutor:
@@ -61,6 +62,7 @@ async def test_registered_executor_receives_context_only() -> None:
 
 
 def test_redaction_blocks_secrets_from_alias_binding() -> None:
+    """alias 绑定唯一语义：敏感键被移除（而非替换为 ``***``），公开结果脱敏则保留键。"""
     raw = {
         "status_code": 200,
         "headers": {"Authorization": "Bearer secret-token", "Content-Type": "application/json"},
@@ -70,14 +72,19 @@ def test_redaction_blocks_secrets_from_alias_binding() -> None:
             "nested": {"access_token": "tok", "ok": True},
         },
     }
-    safe = safe_response_for_alias(raw)
-    assert safe is not None
-    assert safe["headers"]["Authorization"] == "***"
-    assert safe["body"]["password"] == "***"
-    assert safe["body"]["nested"]["access_token"] == "***"
+    safe = bind_alias_response(raw)
+    # 敏感键整体消失：下游引用会得到 variable_resolution，而不是一个看似合法的 "***"。
+    assert "Authorization" not in safe["headers"]
+    assert safe["headers"]["Content-Type"] == "application/json"
+    assert "password" not in safe["body"]
+    assert "access_token" not in safe["body"]["nested"]
     assert safe["body"]["nested"]["ok"] is True
     assert safe["body"]["id"] == "1"
-    # 脱敏值不得看似可继续引用的真实秘密
+    assert "***" not in str(safe)
+    assert "secret-token" not in str(safe)
+    assert "p@ss" not in str(safe)
+    # 公开结果脱敏（redact_json）保留键并替换为占位符，两者语义分明。
     dumped = redact_json(raw)
+    assert dumped["headers"]["Authorization"] == "***"
     assert "secret-token" not in str(dumped)
     assert "p@ss" not in str(dumped)

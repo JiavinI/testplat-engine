@@ -3,11 +3,11 @@
 from testplat_engine.shared.redact import (
     is_sensitive_key,
     redact_json,
-    safe_response_for_alias,
+    strip_sensitive_json,
 )
 
 __all__ = [
     "is_sensitive_key",
     "redact_json",
-    "safe_response_for_alias",
+    "strip_sensitive_json",
 ]

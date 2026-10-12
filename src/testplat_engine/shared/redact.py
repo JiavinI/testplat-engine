@@ -1,4 +1,7 @@
-"""公开结果与 alias 绑定用的递归脱敏。
+"""公开结果脱敏与 alias 敏感键剔除。
+
+- ``redact_json``：公开结果用，敏感键保留并替换为 ``***``。
+- ``strip_sensitive_json``：alias 绑定用，敏感键直接**移除**（唯一的 alias 脱敏语义）。
 
 脱敏后的值不得再供后续步骤引用；凭证传播须等待独立身份/秘密通道。
 本模块不依赖 interface，避免与 DTO 构造形成循环导入。
@@ -72,32 +75,3 @@ def strip_sensitive_json(value: Any) -> Any:
             if not is_sensitive_key(str(key))
         }
     return str(value)
-
-
-def safe_response_for_alias(response: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """构造可绑定到 alias 的安全响应对象。
-
-    只保留 status_code / headers / body；headers 与 body 均递归脱敏。
-    不包含 request、error 或完整 StepOutcome。
-    """
-    if response is None:
-        return None
-    status_code = response.get("status_code")
-    headers = response.get("headers", {})
-    body = response.get("body")
-    safe_headers: dict[str, Any] = {}
-    if isinstance(headers, Mapping):
-        for key, value in headers.items():
-            name = str(key)
-            if is_sensitive_key(name):
-                safe_headers[name] = _REDACTED
-            else:
-                if isinstance(value, (dict, list, Mapping)):
-                    safe_headers[name] = redact_json(value)
-                else:
-                    safe_headers[name] = str(value)
-    return {
-        "status_code": status_code if isinstance(status_code, int) else status_code,
-        "headers": safe_headers,
-        "body": redact_json(body),
-    }
