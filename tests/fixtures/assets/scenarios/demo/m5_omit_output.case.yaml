@@ -1,0 +1,10 @@
+schema_version: "0.2"
+id: case.demo.m5_omit_output
+name: M5 省略 output 且无人引用
+tags: [mutation, m5]
+steps:
+  - step_id: only
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "1"

@@ -1,27 +1,37 @@
-"""单 API 执行引擎。
+"""Engine 执行入口：单 API 执行 Module + Case 串行执行接线。
 
 本模块实现公开 ``EnginePort``：消费 Control 已解析的环境配置，加载资产、
 渲染变量、发送 HTTP 请求并做断言。不负责读取 ``config_root``、落库或 HTTP 映射。
+
+``execute(request)`` 是唯一公开入口，按请求类型判别：
+``ApiExecutionRequest`` → 单 API（0.1 行为不变）；
+``CaseExecutionRequest`` → ``CaseRunner`` 串行执行，``api`` 步骤委托回本模块的单 API 路径。
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from pathlib import Path
+from typing import Any, overload
 
 import httpx
 import yaml
 
+from testplat_engine.adapters.filesystem.case_loader import validate_case_request_params
 from testplat_engine.adapters.filesystem.registry import Registry
 from testplat_engine.domain.api import Api
 from testplat_engine.domain.result import ApiResult
+from testplat_engine.engine.api_step_executor import ApiStepExecutor
 from testplat_engine.engine.assert_engine import check_success
+from testplat_engine.engine.case_runner import CaseRunner
 from testplat_engine.engine.resolver import resolve_variables
 from testplat_engine.interface import (
     ApiExecutionOutcome,
     ApiExecutionRequest,
     AssetNotFoundError,
+    CaseExecutionOutcome,
+    CaseExecutionRequest,
     EngineError,
     EngineInternalError,
     EngineTimeoutError,
@@ -31,9 +41,11 @@ from testplat_engine.interface import (
     InvalidEnvironmentError,
     JsonObject,
     JsonValue,
+    _thaw_json,
 )
 from testplat_engine.plugins.httpx_client import HttpxClient
 from testplat_engine.ports.http_client import HttpClient, HttpResponse
+from testplat_engine.ports.step_executor import StepExecutorRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +72,73 @@ class SingleApiEngine:
     - ``timeout_seconds``：必须原样传到 HTTP client，确保超时真正生效。
 
     可选注入 ``HttpClient`` 便于单元测试；未注入时按次创建 ``HttpxClient``，
-    并在 ``finally`` 中关闭，避免连接池泄漏。
+    并在 ``finally`` 中关闭，避免连接池泄漏。Case 的每个 ``api`` 步骤各自走一次该
+    生命周期，所以任何步骤失败都不会遗留本引擎创建的连接。
     """
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._injected_client = http_client
+        # 第一批 registry 只注册 api；其他 type 已由 Case 契约层在 preflight 拒绝。
+        registry = StepExecutorRegistry()
+        registry.register("api", ApiStepExecutor(self))
+        self._case_runner = CaseRunner(registry)
 
-    async def execute(self, request: ApiExecutionRequest) -> ApiExecutionOutcome:
-        """执行单 API，返回业务结果或抛出已分类系统异常。"""
+    @overload
+    async def execute(self, request: ApiExecutionRequest) -> ApiExecutionOutcome: ...
+
+    @overload
+    async def execute(self, request: CaseExecutionRequest) -> CaseExecutionOutcome: ...
+
+    async def execute(
+        self, request: ApiExecutionRequest | CaseExecutionRequest
+    ) -> ApiExecutionOutcome | CaseExecutionOutcome:
+        """唯一公开入口：按请求类型执行单 API 或串行 Case。"""
+        if isinstance(request, CaseExecutionRequest):
+            return await self._execute_case(request)
+        if isinstance(request, ApiExecutionRequest):
+            return await self.execute_api(request)
+        raise EngineInternalError(
+            "preflight",
+            log_reason=f"unsupported request type: {type(request).__name__}",
+        )
+
+    async def _execute_case(self, request: CaseExecutionRequest) -> CaseExecutionOutcome:
+        """加载并校验 Case（preflight，不产生执行结果），再交给 CaseRunner。"""
+        try:
+            registry = Registry(assets_root=request.assets_root)
+            case = registry.load_case(request.case_id)
+            case_params = validate_case_request_params(
+                case, _thaw_json(request.params)  # type: ignore[arg-type]
+            )
+        except EngineError:
+            raise
+        except Exception as exc:
+            raise EngineInternalError(
+                "preflight", log_reason=f"{type(exc).__name__}: {exc}"
+            ) from exc
+        return await self._case_runner.run(
+            case,
+            assets_root=request.assets_root,
+            environment=_thaw_json(request.environment),  # type: ignore[arg-type]
+            case_params=case_params,
+            timeout_seconds=request.timeout_seconds,
+        )
+
+    def preflight_api(
+        self, api_id: str, assets_root: Path, environment: Mapping[str, JsonValue]
+    ) -> None:
+        """只做资产加载与 host 解析，不发请求；供 Case 在执行前整体预检。"""
+        api = self._load_api(api_id, assets_root)
+        self._resolve_base_url(api, environment)
+
+    async def execute_api(
+        self, request: ApiExecutionRequest, *, preserve_param_types: bool = False
+    ) -> ApiExecutionOutcome:
+        """执行单 API，返回业务结果或抛出已分类系统异常。
+
+        ``preserve_param_types`` 仅供 Case 的 api 步骤使用（不属于 ``EnginePort``）：
+        默认 False 保持 0.1 的字符串插值行为。
+        """
         stage: ErrorStage = "preflight"
         client: HttpClient | None = None
         owns_client = False
@@ -79,7 +150,13 @@ class SingleApiEngine:
             api = self._load_api(request.api_id, request.assets_root)
             base_url = self._resolve_base_url(api, request.environment)
             full_url = f"{base_url}{api.url}"
-            resolved = resolve_variables(api, dict(request.params))
+            if preserve_param_types:
+                # 冻结快照含 tuple/MappingProxy，渲染前解冻以便整字段占位符回填纯 JSON。
+                resolved = resolve_variables(
+                    api, _thaw_json(request.params), preserve_types=True  # type: ignore[arg-type]
+                )
+            else:
+                resolved = resolve_variables(api, dict(request.params))
             public_request = self._build_public_request(
                 method=resolved["method"],
                 url=full_url,
@@ -125,12 +202,14 @@ class SingleApiEngine:
             raise
         except Exception as exc:
             classified = self._map_exception(exc, stage)
+            # 日志只写安全字段：原始异常文本（可能夹带 password/token/Cookie 值）
+            # 与 traceback（exc_info 会格式化异常消息）一律不进日志；
+            # 完整原因仅保留在 classified.log_reason 与 __cause__ 链上，由调用方自行决策。
             logger.error(
-                "engine execute failed kind=%s stage=%s reason=%s",
+                "engine execute failed kind=%s stage=%s exc_type=%s",
                 classified.kind,
                 classified.stage,
-                classified.log_reason,
-                exc_info=exc,
+                type(exc).__name__,
             )
             raise classified from exc
         finally:
@@ -141,11 +220,13 @@ class SingleApiEngine:
                     await client.close()  # type: ignore[misc]
                 except Exception as close_exc:
                     if classified is not None:
+                        # 只记异常类型名，不记 close 异常文本（同样可能含敏感值）。
                         logger.warning(
-                            "http client close failed after classified error kind=%s stage=%s: %s",
+                            "http client close failed after classified error "
+                            "kind=%s stage=%s exc_type=%s",
                             classified.kind,
                             classified.stage,
-                            close_exc,
+                            type(close_exc).__name__,
                         )
                     else:
                         raise EngineInternalError(

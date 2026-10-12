@@ -1,13 +1,15 @@
 """测试资产注册表。
 
-提供从文件系统加载 API 契约的统一入口。路径解析必须限制在 ``assets_root``
-之内，防止 ``api_id`` 通过 ``..`` 或分隔符逃逸到资产目录外。
+提供从文件系统加载 API / Case 契约的统一入口。路径解析必须限制在
+``assets_root`` 之内，防止 id 通过 ``..`` 或分隔符逃逸到资产目录外。
 """
 
 from pathlib import Path
 
+from testplat_engine.adapters.filesystem.case_loader import load_case as _load_case
 from testplat_engine.adapters.filesystem.yaml_loader import load_yaml, yaml_to_api
 from testplat_engine.domain.api import Api
+from testplat_engine.domain.case import Case
 
 
 class Registry:
@@ -46,6 +48,10 @@ class Registry:
             )
 
         return api
+
+    def load_case(self, case_id: str) -> Case:
+        """加载 Case 资产；委托 case_loader，抛出公开 EngineError 族。"""
+        return _load_case(case_id, self.assets_root)
 
     def _api_id_to_path(self, api_id: str) -> Path:
         """将 API id 转为文件路径，并强制结果位于 assets_root 内。

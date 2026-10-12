@@ -18,6 +18,7 @@ from testplat_engine import (
     EngineUnavailableError,
     InvalidAssetError,
     InvalidEnvironmentError,
+    InvalidInputError,
 )
 
 
@@ -87,6 +88,7 @@ def test_request_rejects_invalid_timeout_and_non_json_values() -> None:
         (AssetNotFoundError, "asset_not_found", "preflight"),
         (InvalidAssetError, "invalid_asset", "preflight"),
         (InvalidEnvironmentError, "invalid_environment", "preflight"),
+        (InvalidInputError, "invalid_input", "preflight"),
         (EngineTimeoutError, "timeout", "execution"),
         (EngineTransportError, "transport", "execution"),
         (EngineUnavailableError, "unavailable", "preflight"),

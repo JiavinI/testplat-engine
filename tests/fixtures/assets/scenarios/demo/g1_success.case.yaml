@@ -1,0 +1,20 @@
+schema_version: "0.2"
+id: case.demo.g1_success
+name: G1 两步成功
+desc: create 输出 alias，get 引用 created.body.id
+tags: [golden, g1]
+params:
+  resource_name: demo
+steps:
+  - step_id: create
+    type: api
+    api_id: api.demo.create
+    name: 创建资源
+    params:
+      name: "${params.resource_name}"
+    output: created
+  - step_id: get
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "${created.body.id}"

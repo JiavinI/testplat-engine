@@ -1,0 +1,25 @@
+schema_version: "0.2"
+id: case.demo.g3_typed_propagation
+name: G3 类型保持传播
+desc: 整字段占位符传播 number/boolean/object
+tags: [golden, g3]
+params:
+  seed_number: 42
+steps:
+  - step_id: step_a
+    type: api
+    api_id: api.demo.echo_number
+    params:
+      value: "${params.seed_number}"
+    output: num_out
+  - step_id: step_b
+    type: api
+    api_id: api.demo.echo_bool
+    params:
+      value: "${num_out.body.flag}"
+    output: bool_out
+  - step_id: step_c
+    type: api
+    api_id: api.demo.echo_object
+    params:
+      value: "${bool_out.body.payload}"

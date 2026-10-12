@@ -1,0 +1,10 @@
+id: api.demo.echo_number
+name: 回显数字
+host: local
+method: POST
+url: /demo/echo
+request:
+  body:
+    value: "${value}"
+success:
+  status_code: 200

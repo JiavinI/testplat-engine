@@ -1,0 +1,11 @@
+schema_version: "0.2"
+id: case.demo.m8_missing_params
+name: M8 缺失 params 引用
+tags: [mutation, m8]
+params: {}
+steps:
+  - step_id: only
+    type: api
+    api_id: api.demo.create
+    params:
+      name: "${params.missing}"

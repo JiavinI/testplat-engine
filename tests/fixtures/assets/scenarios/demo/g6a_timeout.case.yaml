@@ -1,0 +1,21 @@
+schema_version: "0.2"
+id: case.demo.g6a_timeout
+name: G6a 超时
+tags: [golden, g6a]
+params:
+  resource_name: demo
+steps:
+  - step_id: before
+    type: api
+    api_id: api.demo.create
+    params:
+      name: "${params.resource_name}"
+    output: created
+  - step_id: slow
+    type: api
+    api_id: api.demo.timeout_target
+  - step_id: after
+    type: api
+    api_id: api.demo.get
+    params:
+      resource_id: "${created.body.id}"

@@ -1,0 +1,12 @@
+id: api.demo.create
+name: 创建资源
+host: local
+method: POST
+url: /demo/resources
+request:
+  headers:
+    Content-Type: application/json
+  body:
+    name: "${name}"
+success:
+  status_code: 201
