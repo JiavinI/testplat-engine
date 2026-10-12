@@ -1,0 +1,8 @@
+schema_version: "0.2"
+id: case.auth.auth_step_override
+name: 步骤级 auth 不允许
+steps:
+  - step_id: s1
+    type: api
+    api_id: api.auth.default_get
+    auth: admin

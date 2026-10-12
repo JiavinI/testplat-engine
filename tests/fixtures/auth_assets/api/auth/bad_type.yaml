@@ -1,0 +1,8 @@
+id: api.auth.bad_type
+name: auth 类型错误
+host: echo
+method: GET
+url: /echo/headers
+auth: [admin]
+success:
+  status_code: 200

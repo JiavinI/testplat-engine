@@ -67,6 +67,11 @@ def yaml_to_api(data: dict[str, Any]) -> Api:
     request = data.get('request', {})
     success = data.get('success', {})
 
+    # 3.3a 身份声明（Q6）：缺省或 null → 未声明；"" / 非字符串 → invalid_asset。
+    auth = data.get('auth')
+    if auth is not None and (not isinstance(auth, str) or not auth.strip()):
+        raise ValueError(f"auth 必须是非空字符串身份名或 none,实际类型为: {type(auth).__name__}")
+
     # 验证数据类型
     if not isinstance(request, dict):
         raise ValueError(f"request 必须是字典类型,实际为: {type(request).__name__}")
@@ -82,4 +87,5 @@ def yaml_to_api(data: dict[str, Any]) -> Api:
         host=host,
         request=request,
         success=success,
+        auth=auth,
     )

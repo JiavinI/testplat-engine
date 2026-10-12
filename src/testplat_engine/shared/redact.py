@@ -1,9 +1,16 @@
 """公开结果脱敏与 alias 敏感键剔除。
 
 - ``redact_json``：公开结果用，敏感键保留并替换为 ``***``。
-- ``strip_sensitive_json``：alias 绑定用，敏感键直接**移除**（唯一的 alias 脱敏语义）。
+- ``strip_sensitive_json``：alias 绑定用，敏感键直接**移除**（按键名语义）。
+- ``redact_secret_values``：3.3a 按值替换。把本次执行注入的秘密值在任意嵌套字符串
+  中按**子串**替换为 ``***``，键保留。
 
-脱敏后的值不得再供后续步骤引用；凭证传播须等待独立身份/秘密通道。
+两种 alias 语义的区别（Q4）：``strip_sensitive_json`` 针对“键名敏感”的字段，整键移除，
+下游引用表现为缺失；``redact_secret_values`` 针对“值是本次凭证”的字符串（例如目标服务
+把 Authorization 回显到 ``$.echo.value`` 这种非敏感键下），只替换子串、保留键，下游拿到
+的是 ``***`` 而不是原值。alias 绑定的输入是已经过两层处理的公开响应，两者叠加生效。
+
+``_SENSITIVE_KEYS`` 是 Engine 唯一的敏感名单：公开 JSON 键与 HTTP 头名都以它为准（H1）。
 本模块不依赖 interface，避免与 DTO 构造形成循环导入。
 """
 
@@ -12,7 +19,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-# 裁决稿要求的最小集合；大小写不敏感匹配键名。
+# 裁决稿要求的最小集合；大小写不敏感匹配键名。也是 HTTP 头脱敏的唯一来源，
+# executor 不再维护独立的头名单（H1：两份名单曾经不一致）。
 _SENSITIVE_KEYS = frozenset(
     {
         "authorization",
@@ -75,3 +83,30 @@ def strip_sensitive_json(value: Any) -> Any:
             if not is_sensitive_key(str(key))
         }
     return str(value)
+
+
+def redact_secret_values(value: Any, secrets: tuple[str, ...]) -> Any:
+    """递归把字符串中出现的秘密子串替换为 ``***``；键与结构保留。
+
+    ``secrets`` 由调用方按长度降序传入（先替换完整 header 值，再替换原始变量值），
+    空元组时原样返回副本。键名不替换：键承载结构语义，秘密作为键名不属于本批场景。
+    """
+    if not secrets:
+        return value
+    if isinstance(value, str):
+        return redact_secret_text(value, secrets)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [redact_secret_values(item, secrets) for item in value]
+    if isinstance(value, Mapping):
+        return {str(key): redact_secret_values(item, secrets) for key, item in value.items()}
+    return redact_secret_text(str(value), secrets)
+
+
+def redact_secret_text(text: str, secrets: tuple[str, ...]) -> str:
+    """对单个字符串做按值替换。"""
+    for secret in secrets:
+        if secret and secret in text:
+            text = text.replace(secret, _REDACTED)
+    return text

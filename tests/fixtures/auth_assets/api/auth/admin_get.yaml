@@ -1,0 +1,8 @@
+id: api.auth.admin_get
+name: 以 admin 身份回显 header
+host: echo
+method: GET
+url: /echo/headers
+auth: admin
+success:
+  status_code: 200

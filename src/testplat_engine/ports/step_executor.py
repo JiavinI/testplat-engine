@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from testplat_engine.domain.case import CaseStep
-from testplat_engine.interface import JsonValue, StepOutcome
+from testplat_engine.interface import AuthTable, JsonValue, StepOutcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +25,8 @@ class StepExecutionContext:
     case_params: Mapping[str, JsonValue]
     aliases: Mapping[str, JsonValue] = field(default_factory=dict)
     timeout_seconds: float = 30.0
+    # H2：Case 级身份表逐层下传到每个步骤的预检与请求；漏传会让步骤匿名执行。
+    auth: AuthTable | None = None
 
 
 class StepExecutor(Protocol):

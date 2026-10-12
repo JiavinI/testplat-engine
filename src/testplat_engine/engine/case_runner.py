@@ -35,6 +35,7 @@ from testplat_engine.engine.case_context import (
     resolve_step_params,
 )
 from testplat_engine.interface import (
+    AuthTable,
     CaseExecutionOutcome,
     EngineError,
     EngineInternalError,
@@ -70,11 +71,13 @@ class CaseRunner:
         environment: Mapping[str, JsonValue],
         case_params: Mapping[str, JsonValue],
         timeout_seconds: float,
+        auth: AuthTable | None = None,
     ) -> CaseExecutionOutcome:
         """执行 Case。
 
         ``case_params`` 必须是已合并且已通过 preflight 校验的参数；
         ``timeout_seconds`` 是**每个步骤**的 HTTP 超时，不是整个 Case 的预算。
+        ``auth`` 是整张身份表，原样下传给每个步骤（预检 + 执行），本类不解析身份。
 
         Returns:
             业务结果（Case success 或业务 failed）。
@@ -88,7 +91,7 @@ class CaseRunner:
         assert isinstance(frozen_params, MappingProxyType)
         assert isinstance(frozen_env, MappingProxyType)
 
-        self._preflight(case, assets_root, frozen_env, frozen_params, timeout_seconds)
+        self._preflight(case, assets_root, frozen_env, frozen_params, timeout_seconds, auth)
 
         started = time.perf_counter()
         # alias 表由本方法独占；executor 只能看到 MappingProxyType 快照。
@@ -100,7 +103,7 @@ class CaseRunner:
             try:
                 outcome = await self._run_step(
                     step, assets_root, frozen_env, frozen_params, aliases, timeout_seconds,
-                    step_started,
+                    step_started, auth,
                 )
                 if outcome.status == "success" and step.output is not None:
                     # 声明了 output 才写 alias；形状不符是 executor 缺陷，走 internal。
@@ -157,11 +160,13 @@ class CaseRunner:
         environment: Mapping[str, JsonValue],
         case_params: Mapping[str, JsonValue],
         timeout_seconds: float,
+        auth: AuthTable | None = None,
     ) -> None:
         """在执行任何步骤前，确认每个步骤都有 executor 且静态可执行。
 
         这样"executor 未注册 / 资产缺失 / 环境缺 host"在零副作用时就以
         preflight 错误暴露，不会出现前几步已发请求、后几步才报 preflight。
+        身份不存在/不可用同理：全部步骤的身份在这里一次性检查。
         """
         context = StepExecutionContext(
             assets_root=assets_root,
@@ -169,6 +174,7 @@ class CaseRunner:
             case_params=case_params,
             aliases=MappingProxyType({}),
             timeout_seconds=timeout_seconds,
+            auth=auth,
         )
         for step in case.steps:
             executor = self._executor_for(step)
@@ -191,6 +197,7 @@ class CaseRunner:
         aliases: Mapping[str, Mapping[str, object]],
         timeout_seconds: float,
         step_started: float,
+        auth: AuthTable | None = None,
     ) -> StepOutcome:
         """解析引用 → 调 executor → 校验返回值；变量解析失败以业务 failed 返回。"""
         alias_view: Mapping[str, object] = MappingProxyType(dict(aliases))
@@ -215,6 +222,7 @@ class CaseRunner:
             case_params=case_params,
             aliases=alias_view,
             timeout_seconds=timeout_seconds,
+            auth=auth,
         )
         # executor 只拿到已解析的 params；原始 CaseStep 对象保持不变。
         resolved_step = CaseStep(

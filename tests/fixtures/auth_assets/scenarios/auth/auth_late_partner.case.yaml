@@ -1,0 +1,10 @@
+schema_version: "0.2"
+id: case.auth.auth_late_partner
+name: 第二步用到 partner（测试中设为不可用）
+steps:
+  - step_id: s1
+    type: api
+    api_id: api.auth.admin_get
+  - step_id: s2
+    type: api
+    api_id: api.auth.partner_get

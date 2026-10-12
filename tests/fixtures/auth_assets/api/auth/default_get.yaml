@@ -1,0 +1,10 @@
+id: api.auth.default_get
+name: 未声明身份
+host: echo
+method: GET
+url: /echo/headers
+request:
+  headers:
+    X-Trace: trace-1
+success:
+  status_code: 200

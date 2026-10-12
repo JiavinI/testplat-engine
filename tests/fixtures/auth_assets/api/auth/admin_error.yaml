@@ -1,0 +1,8 @@
+id: api.auth.admin_error
+name: 错误响应正文回显 header
+host: echo
+method: GET
+url: /echo/error
+auth: admin
+success:
+  status_code: 200

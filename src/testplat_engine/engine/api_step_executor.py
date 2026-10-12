@@ -18,6 +18,7 @@ from testplat_engine.domain.case import CaseStep
 from testplat_engine.interface import (
     ApiExecutionOutcome,
     ApiExecutionRequest,
+    AuthTable,
     JsonValue,
     StepOutcome,
     _thaw_json,
@@ -33,7 +34,12 @@ class ApiRunner(Protocol):
     ) -> ApiExecutionOutcome: ...
 
     def preflight_api(
-        self, api_id: str, assets_root: Path, environment: Mapping[str, JsonValue]
+        self,
+        api_id: str,
+        assets_root: Path,
+        environment: Mapping[str, JsonValue],
+        *,
+        auth: AuthTable | None = None,
     ) -> None: ...
 
 
@@ -49,6 +55,7 @@ class ApiStepExecutor:
             step.api_id,
             context.assets_root,
             _thaw_json(context.environment),  # type: ignore[arg-type]
+            auth=context.auth,  # H2：预检同样按身份表解析，Case 在执行前一次性发现不可用身份
         )
 
     async def execute_step(self, step: CaseStep, context: StepExecutionContext) -> StepOutcome:
@@ -65,6 +72,8 @@ class ApiStepExecutor:
             environment=_thaw_json(context.environment),  # type: ignore[arg-type]
             params=dict(step.params),
             timeout_seconds=context.timeout_seconds,
+            # H2：步骤请求必须携带身份表，否则凭证 header 不会被注入。
+            auth=context.auth,
         )
         outcome = await self._api_runner.execute_api(request, preserve_param_types=True)
         duration = time.perf_counter() - started
@@ -81,4 +90,5 @@ class ApiStepExecutor:
             error=public["error"],  # type: ignore[arg-type]
             # output 只回显 alias 名，不复制响应值；失败步骤不产出 alias。
             output=step.output if outcome.status == "success" else None,
+            auth=public["auth"],  # type: ignore[arg-type]
         )

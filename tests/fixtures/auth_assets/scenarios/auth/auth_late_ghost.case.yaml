@@ -1,0 +1,13 @@
+schema_version: "0.2"
+id: case.auth.auth_late_ghost
+name: 第三步才用到未知身份
+steps:
+  - step_id: s1
+    type: api
+    api_id: api.auth.admin_get
+  - step_id: s2
+    type: api
+    api_id: api.auth.none_get
+  - step_id: s3
+    type: api
+    api_id: api.auth.ghost_get
