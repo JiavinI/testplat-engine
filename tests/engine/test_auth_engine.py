@@ -69,7 +69,9 @@ async def test_admin_identity_injects_header_and_hides_secret() -> None:
     dumped = outcome.to_dict()
     assert dumped["status"] == "success"
     assert dumped["auth"] == {
-        "identity": "admin", "header_names": ["Authorization"], "overridden_headers": []
+        "identity": "admin", "kind": "static_headers", "tier": None,
+        "header_names": ["Authorization"], "overridden_headers": [],
+        "cookie_names": [], "login_ref": None,
     }
     assert dumped["request"]["headers"] == {"Authorization": "***"}
     # §6-2：回显到非敏感键下 → 按值替换为 ***，键保留。

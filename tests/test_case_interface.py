@@ -57,8 +57,8 @@ def make_success_steps() -> tuple[StepOutcome, StepOutcome]:
 
 
 def test_version_is_0_3_0() -> None:
-    # 3.3a 新增公开 auth 字段，按 D6 发布 0.3.0。
-    assert __version__ == "0.3.0"
+    # 3.3b 登录鉴权与公开 auth 扩展，按 D14 发布 0.4.0。
+    assert __version__ == "0.4.0"
 
 
 def test_case_request_is_frozen_and_json_serializable() -> None:

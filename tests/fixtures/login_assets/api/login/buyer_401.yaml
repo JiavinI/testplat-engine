@@ -1,0 +1,8 @@
+id: api.login.buyer_401
+name: buyer 访问 401 端点
+host: target
+method: GET
+url: /protected/401
+auth: buyer
+success:
+  status_code: 200

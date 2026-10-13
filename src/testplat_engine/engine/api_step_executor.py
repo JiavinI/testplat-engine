@@ -75,7 +75,15 @@ class ApiStepExecutor:
             # H2：步骤请求必须携带身份表，否则凭证 header 不会被注入。
             auth=context.auth,
         )
-        outcome = await self._api_runner.execute_api(request, preserve_param_types=True)
+        if context.session_pool is not None:
+            # Q6：会话池只经内部关键字参数传递；未提供时保持旧调用签名（兼容测试替身）。
+            outcome = await self._api_runner.execute_api(
+                request,
+                preserve_param_types=True,
+                session_pool=context.session_pool,  # type: ignore[call-arg]
+            )
+        else:
+            outcome = await self._api_runner.execute_api(request, preserve_param_types=True)
         duration = time.perf_counter() - started
         # to_dict() 产出已解冻的纯 JSON；直接传冻结快照会因 tuple 被 DTO 校验拒绝。
         public = outcome.to_dict()

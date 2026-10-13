@@ -12,7 +12,7 @@
 - 真实实现：`SingleApiEngine`（消费 Control 已解析的 `environment`，不再猜测 `config_root`）
 
 0.2 冻结 Case 公共 DTO、资产 schema 与校验契约；串行 CaseRunner 与 `api` StepExecutor 已接入同一 `execute` seam：`execute(CaseExecutionRequest)` 按声明顺序串行执行，默认 fail-fast，业务失败返回结果，timeout/transport/internal 抛异常并携带安全 `partial_outcome`。
-仍不提供重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。兼容说明见 `docs/COMPATIBILITY-0.2.md`。
+仍不提供重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。兼容说明见 `docs/COMPATIBILITY-0.2.md`；0.4.0 登录鉴权见 `docs/COMPATIBILITY-0.4.md`。
 
 ## 安装
 

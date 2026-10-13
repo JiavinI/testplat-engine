@@ -47,6 +47,9 @@ def resolve_variables(
     result = {
         "method": api.method,
         "url": api.url,
+        # 3.3b：请求体类型与 raw 的 content_type 原样透传；默认 json（M4 零影响）。
+        "body_type": (api.request or {}).get("type", "json"),
+        "content_type": (api.request or {}).get("content_type"),
     }
 
     # 处理请求体

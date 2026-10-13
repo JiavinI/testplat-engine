@@ -1,0 +1,8 @@
+schema_version: "0.2"
+id: case.login.login_fail_mid
+name: 中途登录失败
+steps:
+  - {step_id: a1, type: api, api_id: api.login.anon_echo}
+  - {step_id: b1, type: api, api_id: api.login.buyer_echo}
+  - {step_id: a2, type: api, api_id: api.login.anon_echo}
+  - {step_id: b2, type: api, api_id: api.login.buyer_echo}

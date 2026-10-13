@@ -1,0 +1,9 @@
+schema_version: "0.2"
+id: case.login.alternate
+name: 两个 login 身份交替 + 匿名
+steps:
+  - {step_id: b1, type: api, api_id: api.login.buyer_echo}
+  - {step_id: s1, type: api, api_id: api.login.seller_echo}
+  - {step_id: a1, type: api, api_id: api.login.anon_echo}
+  - {step_id: b2, type: api, api_id: api.login.buyer_echo}
+  - {step_id: s2, type: api, api_id: api.login.seller_echo}

@@ -4,8 +4,22 @@
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass(frozen=True, slots=True)
+class CookieInfo:
+    """一条 Cookie（H2，内部端口）：名字、值、作用域与过期时间（epoch 秒或 None）。
+
+    ``repr`` 不含值：Cookie 值一律视为秘密，避免经调试输出/断言消息外泄。
+    """
+
+    name: str
+    value: str = field(repr=False)
+    domain: str = ""
+    path: str = "/"
+    expires: float | None = None
 
 
 @dataclass
@@ -20,6 +34,9 @@ class HttpResponse:
     status_code: int
     headers: dict[str, str]
     body: Any  # JSON 解析后的对象
+    # 3.3b（H2）：本响应 Set-Cookie 解析出的 Cookie 列表与原始文本；旧调用方可不传。
+    cookies: list[CookieInfo] = field(default_factory=list, repr=False)
+    text: str | None = field(default=None, repr=False)
 
 
 class HttpClient(ABC):
@@ -69,3 +86,10 @@ class HttpClient(ABC):
             >>> print(response.status_code, response.body)
         """
         pass
+
+    def cookie_jar(self) -> list[CookieInfo]:
+        """当前 client cookie jar 的全部 Cookie（H2）；无 jar 的实现返回空列表。
+
+        login 身份的专用 client 靠它判断 Cookie 过期、取 ``cookie_names`` 与按值脱敏。
+        """
+        return []

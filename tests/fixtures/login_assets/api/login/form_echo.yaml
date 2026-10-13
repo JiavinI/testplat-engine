@@ -1,0 +1,13 @@
+id: api.login.form_echo
+name: form 请求体
+host: target
+method: POST
+url: /echo/form
+auth: buyer
+request:
+  type: form
+  body:
+    user: "${user}"
+    note: "${note}"
+success:
+  status_code: 200

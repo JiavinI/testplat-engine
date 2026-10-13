@@ -1,0 +1,9 @@
+id: api.login.login_placeholder
+name: 资产引用 login 占位符
+host: target
+method: GET
+url: /echo/token
+auth: none
+request:
+  body:
+    t: "${login:token}"

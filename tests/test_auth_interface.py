@@ -80,7 +80,7 @@ def test_secret_str_immutable_and_rejects_non_str() -> None:
 
 
 def test_reveal_called_only_in_injection_module() -> None:
-    """全仓只有注入模块调用 reveal()（AST 约束，防止未来新增泄密路径）。"""
+    """全仓只有注入模块与登录渲染模块调用 reveal()（AST 约束，L3：防止未来新增泄密路径）。"""
     callers: list[str] = []
     for path in SRC_ROOT.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -92,7 +92,7 @@ def test_reveal_called_only_in_injection_module() -> None:
             ):
                 callers.append(path.relative_to(SRC_ROOT).as_posix())
     assert callers, "未找到 reveal 调用，注入点缺失"
-    assert set(callers) == {"engine/auth_injection.py"}
+    assert set(callers) == {"engine/auth_injection.py", "engine/login_render.py"}
 
 
 # ------------------------------------------------------------- 材料与身份表
@@ -220,7 +220,12 @@ def test_construction_errors_never_contain_secret(build: Callable[[], object]) -
 
 
 def test_outcome_auth_field_shape() -> None:
-    info = {"identity": "admin", "header_names": ["Authorization"], "overridden_headers": []}
+    # 0.4：公开 auth 扩展为七键；静态 header 身份 tier/login_ref 为 null、cookie_names 为空。
+    info = {
+        "identity": "admin", "kind": "static_headers", "tier": None,
+        "header_names": ["Authorization"], "overridden_headers": [],
+        "cookie_names": [], "login_ref": None,
+    }
     outcome = ApiExecutionOutcome(status="success", auth=info)
     assert outcome.to_dict()["auth"] == info
     assert ApiExecutionOutcome(status="success").to_dict()["auth"] is None
@@ -233,5 +238,9 @@ def test_skipped_step_cannot_carry_auth() -> None:
         StepOutcome(
             step_id="s", type="api", status="skipped", duration_seconds=0,
             skip_reason="fail_fast",
-            auth={"identity": "admin", "header_names": [], "overridden_headers": []},
+            auth={
+                "identity": "admin", "kind": "static_headers", "tier": None,
+                "header_names": [], "overridden_headers": [], "cookie_names": [],
+                "login_ref": None,
+            },
         )

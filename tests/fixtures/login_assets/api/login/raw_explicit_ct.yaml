@@ -1,0 +1,14 @@
+id: api.login.raw_explicit_ct
+name: raw 请求体显式 Content-Type 优先
+host: target
+method: POST
+url: /echo/raw
+auth: none
+request:
+  type: raw
+  content_type: text/plain
+  headers:
+    Content-Type: application/xml
+  body: "<a/>"
+success:
+  status_code: 200

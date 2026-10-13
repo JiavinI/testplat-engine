@@ -1,0 +1,18 @@
+schema_version: "0.2"
+id: case.login.alias_leak
+name: alias 引用回显 token / 匿名步骤回显他人 token
+params:
+  tok: ""
+steps:
+  - {step_id: leak, type: api, api_id: api.login.buyer_echo, output: echoed}
+  - step_id: use
+    type: api
+    api_id: api.login.echo_value
+    params:
+      value: "${echoed.body.echo.x_token}"
+  - step_id: anon_raw
+    type: api
+    api_id: api.login.echo_value
+    params:
+      value: "${params.tok}"
+  - {step_id: seller, type: api, api_id: api.login.seller_echo}

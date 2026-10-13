@@ -1,0 +1,11 @@
+id: api.login.json_default
+name: 未声明 type 的 json 资产
+host: target
+method: POST
+url: /echo/json
+auth: none
+request:
+  body:
+    value: "${value}"
+success:
+  status_code: 200

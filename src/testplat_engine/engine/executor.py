@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, overload
 
@@ -32,6 +32,14 @@ from testplat_engine.engine.auth_injection import (
     secret_values,
 )
 from testplat_engine.engine.case_runner import CaseRunner
+from testplat_engine.engine.login_render import render_headers
+from testplat_engine.engine.login_session import (
+    LoginFailedError,
+    SessionEntry,
+    SessionPool,
+    preflight_login,
+    validate_strategies,
+)
 from testplat_engine.engine.resolver import resolve_variables
 from testplat_engine.interface import (
     ApiExecutionOutcome,
@@ -49,6 +57,8 @@ from testplat_engine.interface import (
     InvalidEnvironmentError,
     JsonObject,
     JsonValue,
+    LoginAuth,
+    LoginStrategy,
     _thaw_json,
 )
 from testplat_engine.plugins.httpx_client import HttpxClient
@@ -60,6 +70,7 @@ from testplat_engine.shared.redact import (
     redact_secret_text,
     redact_secret_values,
 )
+from testplat_engine.shared.request_body import has_header, public_body, send_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +93,23 @@ class SingleApiEngine:
     生命周期，所以任何步骤失败都不会遗留本引擎创建的连接。
     """
 
-    def __init__(self, http_client: HttpClient | None = None) -> None:
+    def __init__(
+        self,
+        http_client: HttpClient | None = None,
+        *,
+        login_strategies: Sequence[LoginStrategy] = (),
+        client_factory: Callable[[], HttpClient] | None = None,
+    ) -> None:
         self._injected_client = http_client
+        # 测试 seam：每次需要新 client 时调用（例如包了 httpx.MockTransport 的 HttpxClient）；
+        # 生产路径为 None → 每次新建 HttpxClient。注入的 http_client 优先于工厂。
+        self._client_factory = client_factory
+        # 内置 generic_flow 总是注册；插件重名 / 与内置冲突 → 启动期 ValueError（只含策略名）。
+        self._strategies = validate_strategies(login_strategies)
         # 第一批 registry 只注册 api；其他 type 已由 Case 契约层在 preflight 拒绝。
         registry = StepExecutorRegistry()
         registry.register("api", ApiStepExecutor(self))
-        self._case_runner = CaseRunner(registry)
+        self._case_runner = CaseRunner(registry, session_factory=self.new_session_pool)
 
     @overload
     async def execute(self, request: ApiExecutionRequest) -> ApiExecutionOutcome: ...
@@ -139,34 +161,78 @@ class SingleApiEngine:
         *,
         auth: AuthTable | None = None,
     ) -> None:
-        """只做资产加载、host 与身份解析，不发请求；供 Case 在执行前整体预检。"""
+        """只做资产加载、host 与身份解析，不发请求；供 Case 在执行前整体预检。
+
+        3.3b：login 身份另做零副作用预检（策略已注册、validate()、登录 host、inject 引用来源）。
+        """
         api = self._load_api(api_id, assets_root)
         self._resolve_base_url(api, environment)
-        resolve_identity(api, auth)
+        resolved_auth = resolve_identity(api, auth)
+        if resolved_auth is not None and isinstance(resolved_auth.material, LoginAuth):
+            preflight_login(
+                resolved_auth.identity, resolved_auth.material, environment, self._strategies
+            )
+
+    def new_session_pool(self) -> SessionPool:
+        """每次执行一个会话池（Q6：只在 Engine 内部流转，不进公开 DTO）。"""
+        return SessionPool(self._strategies, self._acquire_login_client)
 
     async def execute_api(
-        self, request: ApiExecutionRequest, *, preserve_param_types: bool = False
+        self,
+        request: ApiExecutionRequest,
+        *,
+        preserve_param_types: bool = False,
+        session_pool: SessionPool | None = None,
     ) -> ApiExecutionOutcome:
         """执行单 API，返回业务结果或抛出已分类系统异常。
 
         ``preserve_param_types`` 仅供 Case 的 api 步骤使用（不属于 ``EnginePort``）：
         默认 False 保持 0.1 的字符串插值行为。
+        ``session_pool`` 仅供 Case 路径传入执行级会话池（Q6）；单 API 调用时本方法自建并在
+        结束时关闭，``logins`` 随单 API 结果返回。
         """
+        own_pool = session_pool is None
+        pool = self.new_session_pool() if session_pool is None else session_pool
+        try:
+            return await self._execute_api(request, preserve_param_types, pool, own_pool)
+        finally:
+            if own_pool:
+                await pool.close()
+
+    async def _execute_api(
+        self,
+        request: ApiExecutionRequest,
+        preserve_param_types: bool,
+        pool: SessionPool,
+        own_pool: bool,
+    ) -> ApiExecutionOutcome:
         stage: ErrorStage = "preflight"
         client: HttpClient | None = None
         owns_client = False
         public_request: JsonObject | None = None
         # 已分类异常；finally 中 close 失败时不得覆盖它。
         classified: EngineError | None = None
-        # 本次执行的按值替换集合；只在本次调用的栈帧内存活，不挂到 self 上，避免跨请求串号。
-        secrets: tuple[str, ...] = ()
+        # 本次执行的按值替换集合（H1：执行级并集，挂在会话池上；只在本次执行内存活）。
+        secrets: tuple[str, ...] = pool.snapshot_secrets()
+
+        def logins() -> list[JsonObject]:
+            # Case 路径的登录记录挂在 Case 结果上，步骤级不重复携带。
+            return pool.public_logins() if own_pool else []
 
         try:
             api = self._load_api(request.api_id, request.assets_root)
             base_url = self._resolve_base_url(api, request.environment)
             # 身份解析属于预检：失败抛 invalid_environment，此时尚未发出任何请求。
             resolved_auth = resolve_identity(api, request.auth)
-            secrets = secret_values(resolved_auth)
+            login_material: LoginAuth | None = None
+            login_host = ""
+            if resolved_auth is not None and isinstance(resolved_auth.material, LoginAuth):
+                login_material = resolved_auth.material
+                login_host = preflight_login(
+                    resolved_auth.identity, login_material, request.environment, self._strategies
+                )
+            pool.add_secrets(secret_values(resolved_auth))
+            secrets = pool.snapshot_secrets()
             full_url = f"{base_url}{api.url}"
             if preserve_param_types:
                 # 冻结快照含 tuple/MappingProxy，渲染前解冻以便整字段占位符回填纯 JSON。
@@ -175,33 +241,90 @@ class SingleApiEngine:
                 )
             else:
                 resolved = resolve_variables(api, dict(request.params))
+            body_type = resolved.get("body_type", "json")
+
+            # 3.3b 按需登录（D8）：只有用到 login 身份的这一步才会触发登录。
+            entry: SessionEntry | None = None
+            login_headers: dict[str, str] | None = None
+            if login_material is not None:
+                assert resolved_auth is not None
+                stage = "execution"
+                try:
+                    entry = await pool.ensure(
+                        resolved_auth.identity,
+                        login_material,
+                        login_host,
+                        timeout_seconds=request.timeout_seconds,
+                        connections=request.auth.connections,  # type: ignore[union-attr,arg-type]
+                    )
+                except LoginFailedError as failure:
+                    # D9：登录失败是业务结果（200 + 保存），不是系统异常。
+                    return ApiExecutionOutcome(
+                        status="failed",
+                        error=failure.error_payload(),
+                        auth=public_auth(resolved_auth, [], login_ref=failure.login_ref),
+                        logins=logins(),
+                    )
+                login_headers = render_headers(
+                    login_material.inject_headers, entry.values, login_host
+                )
+                secrets = pool.snapshot_secrets()
+
             send_headers, public_headers, overridden = merge_headers(
-                resolved.get("headers"), resolved_auth
+                resolved.get("headers"), resolved_auth, login_headers
             )
+            body_kwargs, send_headers = send_kwargs(
+                body_type, resolved.get("body"), send_headers, resolved.get("content_type")
+            )
+            if body_type == "raw" and send_headers is not None:
+                # Q4：raw 自动补的 Content-Type 同样出现在公开快照中（非秘密）。
+                public_headers = {
+                    **(public_headers or {}),
+                    **{
+                        k: v
+                        for k, v in send_headers.items()
+                        if k.lower() == "content-type" and not has_header(public_headers, k)
+                    },
+                }
+            cookie_names = pool.cookie_names(entry) if entry is not None else []
             public_request = self._redact_values(
                 self._build_public_request(
                     method=resolved["method"],
                     url=full_url,
                     headers=public_headers,
                     body=resolved.get("body"),
+                    body_type=body_type,
                     extra_sensitive=self._injected_names(resolved_auth),
                 ),
                 secrets,
             )
-            auth_info = public_auth(resolved_auth, overridden)
+            auth_info = public_auth(
+                resolved_auth,
+                overridden,
+                cookie_names=cookie_names,
+                login_ref=None if entry is None else entry.login_ref,
+            )
 
             # 先拿到 HTTP client；_acquire_client 失败仍属 preflight/internal-preflight。
             # 仅在 client 就绪后、真实 HTTP 调用前切换到 execution。
-            client, owns_client = self._acquire_client()
+            # login 身份使用会话池中的专用 client（自带 cookie jar，由池负责关闭）。
+            if entry is not None:
+                client, owns_client = entry.client, False
+            else:
+                client, owns_client = self._acquire_client()
             stage = "execution"
             response = await client.request(
                 method=resolved["method"],
                 url=full_url,
-                json=resolved.get("body"),
                 # 注入点：凭证只出现在本次调用的 headers 参数里，不修改 client 的共享状态。
                 headers=send_headers,
                 timeout=request.timeout_seconds,
+                **body_kwargs,
             )
+            if entry is not None:
+                # D12：Cookie 身份的业务响应同样更新 jar；新 Cookie 值先入集合再构造快照。
+                pool.absorb_cookies(entry.client)
+                secrets = pool.snapshot_secrets()
             public_response = self._redact_values(
                 self._build_public_response(
                     response, extra_sensitive=self._injected_names(resolved_auth)
@@ -216,6 +339,7 @@ class SingleApiEngine:
                     request=public_request,
                     response=public_response,
                     auth=auth_info,
+                    logins=logins(),
                 )
 
             # 断言失败是业务结果，不是系统异常；Control 应记为 HTTP 200 + failed。
@@ -228,6 +352,7 @@ class SingleApiEngine:
                     "message": "断言失败: 响应不符合成功条件",
                 },
                 auth=auth_info,
+                logins=logins(),
             )
 
         except EngineError as exc:
@@ -275,10 +400,20 @@ class SingleApiEngine:
                         ) from close_exc
 
     def _acquire_client(self) -> tuple[HttpClient, bool]:
-        """获取 HTTP client；返回 (client, owns_client)。"""
+        """获取 HTTP client；返回 (client, owns_client)。匿名 / 静态 header 身份每次新建。"""
         if self._injected_client is not None:
             return self._injected_client, False
+        if self._client_factory is not None:
+            return self._client_factory(), True
         return HttpxClient(), True
+
+    def _acquire_login_client(self) -> tuple[HttpClient, bool]:
+        """login 身份的专用 client（每身份每次登录一个，cookie jar 随之隔离）。
+
+        注入了共享 ``http_client``（旧测试 seam）时只能复用它，此时不具备 jar 隔离；
+        需要隔离的测试应使用 ``client_factory``。
+        """
+        return self._acquire_client()
 
     def _load_api(self, api_id: str, assets_root: Any) -> Api:
         """加载资产，并把文件系统层异常映射为公开异常族。"""
@@ -369,15 +504,21 @@ class SingleApiEngine:
         url: str,
         headers: Any,
         body: Any,
+        body_type: str = "json",
         extra_sensitive: frozenset[str] = frozenset(),
     ) -> JsonObject:
-        """构造可 JSON 序列化且已按名脱敏的公开请求快照（按值替换由调用方叠加）。"""
-        return {
+        """构造可 JSON 序列化且已按名脱敏的公开请求快照（按值替换由调用方叠加）。
+
+        3.3b：新增 ``body_type``（M4）；query 类型的参数不进 ``url``，单独放 ``query``（Q8）。
+        """
+        snapshot: JsonObject = {
             "method": method,
             "url": url,
             "headers": self._sanitize_headers(headers, extra_sensitive),
-            "body": self._json_safe(body),
         }
+        for key, value in public_body(body_type, body).items():
+            snapshot[key] = self._json_safe(value)
+        return snapshot
 
     def _build_public_response(
         self, response: HttpResponse, *, extra_sensitive: frozenset[str] = frozenset()
@@ -420,13 +561,14 @@ class SingleApiEngine:
 
 
 
-def create_engine() -> SingleApiEngine:
-    """公开工厂：返回默认 ``SingleApiEngine``，供 Control 包适配器解析。
+def create_engine(*, login_strategies: Sequence[LoginStrategy] = ()) -> SingleApiEngine:
+    """公开工厂：返回 ``SingleApiEngine``，供 Control 包适配器解析。
 
-    与直接构造 ``SingleApiEngine()`` 等价；提供稳定可发现入口，
-    避免 Control 依赖模块级 ``execute`` 或私有路径。
+    ``login_strategies``（L1/E1）：Control 启动时把“entry point ∩ 白名单”的插件实例传入；
+    内置 ``generic_flow`` 总是注册。重名或与内置冲突 → ``ValueError``（消息只含策略名）。
+    无参调用与 0.3.0 等价。
     """
-    return SingleApiEngine()
+    return SingleApiEngine(login_strategies=login_strategies)
 
 
 async def run_api(

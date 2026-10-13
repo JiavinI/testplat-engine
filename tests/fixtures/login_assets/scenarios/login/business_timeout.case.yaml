@@ -1,0 +1,6 @@
+schema_version: "0.2"
+id: case.login.business_timeout
+name: 登录成功后业务请求超时
+steps:
+  - {step_id: b1, type: api, api_id: api.login.buyer_echo}
+  - {step_id: slow, type: api, api_id: api.login.buyer_slow}

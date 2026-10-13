@@ -1,0 +1,8 @@
+id: api.login.admin_echo
+name: 静态 header 身份回显
+host: target
+method: GET
+url: /echo/token
+auth: admin
+success:
+  status_code: 200

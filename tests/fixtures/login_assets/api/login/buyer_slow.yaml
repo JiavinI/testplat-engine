@@ -1,0 +1,6 @@
+id: api.login.buyer_slow
+name: buyer 业务请求超时
+host: target
+method: GET
+url: /business/slow
+auth: buyer

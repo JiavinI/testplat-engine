@@ -1,0 +1,8 @@
+id: api.login.buyer_echo
+name: 以 buyer 身份回显 token
+host: target
+method: GET
+url: /echo/token
+auth: buyer
+success:
+  status_code: 200
