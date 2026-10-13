@@ -1,0 +1,8 @@
+id: api.login.seller_echo
+name: 以 seller 身份回显 Cookie
+host: target
+method: GET
+url: /echo/token
+auth: seller
+success:
+  status_code: 200

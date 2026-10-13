@@ -27,6 +27,9 @@ class StepExecutionContext:
     timeout_seconds: float = 30.0
     # H2：Case 级身份表逐层下传到每个步骤的预检与请求；漏传会让步骤匿名执行。
     auth: AuthTable | None = None
+    # 3.3b（Q6）：执行级会话池（Engine 内部对象，类型刻意放宽以免端口依赖 engine 包）；
+    # None 表示每个步骤自建临时池（旧测试替身路径），此时步骤之间不共享登录状态。
+    session_pool: object | None = None
 
 
 class StepExecutor(Protocol):

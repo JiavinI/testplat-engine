@@ -1,0 +1,11 @@
+id: api.login.echo_value
+name: 匿名回显 JSON 请求体
+host: target
+method: POST
+url: /echo/json
+auth: none
+request:
+  body:
+    value: "${value}"
+success:
+  status_code: 200

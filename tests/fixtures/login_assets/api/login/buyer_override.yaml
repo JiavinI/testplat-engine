@@ -1,0 +1,12 @@
+id: api.login.buyer_override
+name: 资产 header 与注入头冲突
+host: target
+method: GET
+url: /echo/token
+auth: buyer
+request:
+  headers:
+    x-token: "asset-placeholder"
+    X-Trace: "trace-1"
+success:
+  status_code: 200

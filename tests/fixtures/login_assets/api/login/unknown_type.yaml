@@ -1,0 +1,8 @@
+id: api.login.unknown_type
+name: 未知请求体类型
+host: target
+method: POST
+url: /echo/raw
+auth: none
+request:
+  type: xml

@@ -1,0 +1,9 @@
+id: api.login.raw_no_ct
+name: raw 缺 content_type
+host: target
+method: POST
+url: /echo/raw
+auth: none
+request:
+  type: raw
+  body: "x"

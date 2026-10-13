@@ -1,0 +1,8 @@
+id: api.login.plugin_echo
+name: 以插件身份回显
+host: target
+method: GET
+url: /echo/token
+auth: plugged
+success:
+  status_code: 200

@@ -1,0 +1,8 @@
+id: api.login.anon_echo
+name: 匿名回显
+host: target
+method: GET
+url: /echo/token
+auth: none
+success:
+  status_code: 200

@@ -1,0 +1,12 @@
+id: api.login.raw_echo
+name: raw 请求体
+host: target
+method: POST
+url: /echo/raw
+auth: buyer
+request:
+  type: raw
+  content_type: text/plain
+  body: "note=${note}"
+success:
+  status_code: 200

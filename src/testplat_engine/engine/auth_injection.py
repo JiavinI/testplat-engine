@@ -8,8 +8,9 @@
 2. 注入：在 ``client.request`` 调用处把凭证 header 合并进**本次请求**的 headers；
    与资产 header 按不区分大小写判定冲突，凭证优先且只发一份（Q3/M3），不修改任何共享 client。
 3. 按值替换集合：原始变量值 + 完整 header 值（Q5），按长度降序，供公开面脱敏。
+4. 3.3b：``LoginAuth`` 同样在这里解析；其凭证由会话池登录后经 ``login_render`` 渲染。
 
-不变量：``SecretStr.reveal()`` 全仓只允许在本模块调用（有 AST 测试约束）；
+不变量：``SecretStr.reveal()`` 全仓只允许在本模块与 ``login_render`` 调用（有 AST 测试约束）；
 揭示出的明文只进入发给 HTTP client 的 headers 与内存中的替换集合，绝不进入日志、
 异常消息或任何公开结构。
 """
@@ -25,6 +26,7 @@ from testplat_engine.interface import (
     AuthTable,
     InvalidEnvironmentError,
     JsonObject,
+    LoginAuth,
     StaticHeaderAuth,
     UnavailableAuth,
     _material_kind,
@@ -36,11 +38,16 @@ class ResolvedAuth:
     """预检后确定的身份；只在单次 execute_api 调用内存活，不跨请求复用。"""
 
     identity: str
-    material: StaticHeaderAuth
+    material: StaticHeaderAuth | LoginAuth
 
     @property
     def header_names(self) -> tuple[str, ...]:
         return self.material.header_names
+
+    @property
+    def is_login(self) -> bool:
+        """3.3b：login 身份需要先经会话池按需登录，再注入渲染后的 header。"""
+        return isinstance(self.material, LoginAuth)
 
     def __repr__(self) -> str:
         return f"ResolvedAuth(identity={self.identity!r}, header_names={list(self.header_names)!r})"
@@ -79,9 +86,9 @@ def resolve_identity(api: Api, auth: AuthTable | None) -> ResolvedAuth | None:
             public_message=f"身份 {name} 不可用: {material.public_reason}",
             log_reason=f"api={api.id} identity={name} kind=unavailable",
         )
-    if isinstance(material, StaticHeaderAuth):
+    if isinstance(material, (StaticHeaderAuth, LoginAuth)):
         return ResolvedAuth(identity=name, material=material)
-    # 3.3b 新 kind 落到旧 Engine：拒绝，绝不静默降级为匿名。
+    # 未知 kind（例如更新版本 Control 新增的材料）：拒绝，绝不静默降级为匿名。
     kind = _material_kind(material) or "?"
     raise InvalidEnvironmentError(
         public_message=f"身份 {name} 的凭证类型不受支持: {kind[:64]}",
@@ -90,7 +97,9 @@ def resolve_identity(api: Api, auth: AuthTable | None) -> ResolvedAuth | None:
 
 
 def merge_headers(
-    asset_headers: object, resolved: ResolvedAuth | None
+    asset_headers: object,
+    resolved: ResolvedAuth | None,
+    login_headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, str] | None, dict[str, object] | None, list[str]]:
     """合并资产 header 与凭证 header。
 
@@ -100,6 +109,8 @@ def merge_headers(
         - 公开模板：凭证值占位为 ``***``，供公开快照使用；
         - overridden_headers：被凭证覆盖的资产 header 原始写法（Q3）。
     无凭证时原样返回资产 headers，保持 v0.2.0 行为。
+    login 身份的凭证值由调用方经 ``login_render`` 渲染后以 ``login_headers`` 传入；
+    冲突规则与静态 header 相同（不区分大小写、凭证优先、记录 overridden）。
     """
     if resolved is None:
         if isinstance(asset_headers, Mapping):
@@ -119,6 +130,11 @@ def merge_headers(
                 continue
             send[name] = value  # type: ignore[assignment]
             public[name] = value
+    if isinstance(resolved.material, LoginAuth):
+        for name, text in (login_headers or {}).items():
+            send[name] = text
+            public[name] = "***"
+        return send, public, overridden
     for name, secret in resolved.material.headers.items():
         send[name] = secret.reveal()
         public[name] = "***"
@@ -132,7 +148,8 @@ def secret_values(resolved: ResolvedAuth | None) -> tuple[str, ...]:
     因此不加入集合，避免误伤普通文本；secret_values 为空时 header 值已在构造期
     强制 ≥8。
     """
-    if resolved is None:
+    if resolved is None or not isinstance(resolved.material, StaticHeaderAuth):
+        # login 身份的秘密由会话池维护（执行级集合，H1）。
         return ()
     material = resolved.material
     values = {item.reveal() for item in material.secret_values}
@@ -143,12 +160,27 @@ def secret_values(resolved: ResolvedAuth | None) -> tuple[str, ...]:
     return tuple(sorted(values, key=len, reverse=True))
 
 
-def public_auth(resolved: ResolvedAuth | None, overridden: list[str]) -> JsonObject | None:
-    """公开 ``auth`` 字段（Q1）：只含身份名与 header 名。"""
+def public_auth(
+    resolved: ResolvedAuth | None,
+    overridden: list[str],
+    *,
+    cookie_names: list[str] | None = None,
+    login_ref: int | None = None,
+) -> JsonObject | None:
+    """公开 ``auth`` 字段（0.4 七键）：只含身份名、kind、档位、header/Cookie 名与登录下标。
+
+    静态 header 身份：``tier=None``、``cookie_names=[]``、``login_ref=None``。
+    """
     if resolved is None:
         return None
+    material = resolved.material
+    is_login = isinstance(material, LoginAuth)
     return {
         "identity": resolved.identity,
+        "kind": material.kind,
+        "tier": material.tier if is_login else None,  # type: ignore[union-attr]
         "header_names": list(resolved.header_names),
         "overridden_headers": list(overridden),
+        "cookie_names": list(cookie_names or []) if is_login else [],
+        "login_ref": login_ref if is_login else None,
     }

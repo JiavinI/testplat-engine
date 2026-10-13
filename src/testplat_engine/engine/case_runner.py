@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 from testplat_engine.domain.case import Case, CaseStep
 from testplat_engine.engine.case_context import (
@@ -60,8 +61,15 @@ logger = logging.getLogger(__name__)
 class CaseRunner:
     """按资产声明顺序串行执行 Case 的所有步骤。"""
 
-    def __init__(self, registry: StepExecutorRegistry) -> None:
+    def __init__(
+        self,
+        registry: StepExecutorRegistry,
+        *,
+        session_factory: Callable[[], Any] | None = None,
+    ) -> None:
         self._registry = registry
+        # 3.3b：每次 run 调用一次，得到本次执行独占的会话池（D8/D13，不跨执行复用）。
+        self._session_factory = session_factory
 
     async def run(
         self,
@@ -97,42 +105,57 @@ class CaseRunner:
         # alias 表由本方法独占；executor 只能看到 MappingProxyType 快照。
         aliases: dict[str, Mapping[str, object]] = {}
         outcomes: list[StepOutcome] = []
+        pool = self._session_factory() if self._session_factory is not None else None
 
-        for index, step in enumerate(case.steps):
-            step_started = time.perf_counter()
-            try:
-                outcome = await self._run_step(
-                    step, assets_root, frozen_env, frozen_params, aliases, timeout_seconds,
-                    step_started, auth,
-                )
-                if outcome.status == "success" and step.output is not None:
-                    # 声明了 output 才写 alias；形状不符是 executor 缺陷，走 internal。
-                    aliases[step.output] = bind_alias_response(outcome.response)
-            except EngineError as exc:
-                raise self._attribute_system_error(
-                    exc, case, index, outcomes, step_started, started
-                ) from exc
-            except AliasShapeError as exc:
-                wrapped = EngineInternalError(
-                    "execution", log_reason=f"alias shape mismatch: {exc}"
-                )
-                raise self._attribute_system_error(
-                    wrapped, case, index, outcomes, step_started, started, origin=exc
-                ) from exc
-            except Exception as exc:
-                # 未预期的缺陷：保持 internal/execution，归属当前步骤。
-                wrapped = EngineInternalError(
-                    "execution", log_reason=f"{type(exc).__name__}: {exc}"
-                )
-                raise self._attribute_system_error(
-                    wrapped, case, index, outcomes, step_started, started, origin=exc
-                ) from exc
+        try:
+            for index, step in enumerate(case.steps):
+                step_started = time.perf_counter()
+                try:
+                    outcome = await self._run_step(
+                        step, assets_root, frozen_env, frozen_params, aliases, timeout_seconds,
+                        step_started, auth, pool,
+                    )
+                    if outcome.status == "success" and step.output is not None:
+                        # 声明了 output 才写 alias；形状不符是 executor 缺陷，走 internal。
+                        aliases[step.output] = bind_alias_response(outcome.response)
+                except EngineError as exc:
+                    raise self._attribute_system_error(
+                        exc, case, index, outcomes, step_started, started,
+                        logins=_logins(pool),
+                    ) from exc
+                except AliasShapeError as exc:
+                    wrapped = EngineInternalError(
+                        "execution", log_reason=f"alias shape mismatch: {exc}"
+                    )
+                    raise self._attribute_system_error(
+                        wrapped, case, index, outcomes, step_started, started, origin=exc,
+                        logins=_logins(pool),
+                    ) from exc
+                except Exception as exc:
+                    # 未预期的缺陷：保持 internal/execution，归属当前步骤。
+                    wrapped = EngineInternalError(
+                        "execution", log_reason=f"{type(exc).__name__}: {exc}"
+                    )
+                    raise self._attribute_system_error(
+                        wrapped, case, index, outcomes, step_started, started, origin=exc,
+                        logins=_logins(pool),
+                    ) from exc
 
-            outcomes.append(outcome)
-            if outcome.status == "failed":
-                # fail-fast：业务失败后停止；剩余步骤如实标记为 skipped。
-                outcomes.extend(self._skipped(case.steps[index + 1 :]))
-                break
+                outcomes.append(outcome)
+                if outcome.status == "failed":
+                    # fail-fast：业务失败后停止；剩余步骤如实标记为 skipped。
+                    # D9/H4：登录失败归属当前步骤，后续 skip_reason=login_failed 以示区分。
+                    reason = (
+                        "login_failed"
+                        if (outcome.error or {}).get("kind") == "login_failed"
+                        else "fail_fast"
+                    )
+                    outcomes.extend(self._skipped(case.steps[index + 1 :], reason))
+                    break
+        finally:
+            if pool is not None:
+                # 执行结束统一关闭 login 身份的专用 client（成功、失败、异常路径都走这里）。
+                await pool.close()
 
         status = "success" if all(o.status == "success" for o in outcomes) else "failed"
         return CaseExecutionOutcome(
@@ -140,6 +163,7 @@ class CaseRunner:
             status=status,
             duration_seconds=time.perf_counter() - started,
             steps=tuple(outcomes),
+            logins=_logins(pool),
         )
 
     def _executor_for(self, step: CaseStep) -> StepExecutor:
@@ -198,6 +222,7 @@ class CaseRunner:
         timeout_seconds: float,
         step_started: float,
         auth: AuthTable | None = None,
+        pool: Any = None,
     ) -> StepOutcome:
         """解析引用 → 调 executor → 校验返回值；变量解析失败以业务 failed 返回。"""
         alias_view: Mapping[str, object] = MappingProxyType(dict(aliases))
@@ -223,6 +248,7 @@ class CaseRunner:
             aliases=alias_view,
             timeout_seconds=timeout_seconds,
             auth=auth,
+            session_pool=pool,
         )
         # executor 只拿到已解析的 params；原始 CaseStep 对象保持不变。
         resolved_step = CaseStep(
@@ -258,7 +284,7 @@ class CaseRunner:
         return outcome
 
     @staticmethod
-    def _skipped(steps: tuple[CaseStep, ...]) -> list[StepOutcome]:
+    def _skipped(steps: tuple[CaseStep, ...], reason: str = "fail_fast") -> list[StepOutcome]:
         return [
             StepOutcome(
                 step_id=step.step_id,
@@ -266,7 +292,7 @@ class CaseRunner:
                 status="skipped",
                 duration_seconds=0.0,
                 name=step.name,
-                skip_reason="fail_fast",
+                skip_reason=reason,
             )
             for step in steps
         ]
@@ -280,6 +306,7 @@ class CaseRunner:
         step_started: float,
         case_started: float,
         origin: BaseException | None = None,
+        logins: list[JsonObject] | None = None,
     ) -> EngineError:
         """把系统错误归属到当前步骤，返回携带安全 partial_outcome 的同 kind 异常。
 
@@ -316,6 +343,7 @@ class CaseRunner:
             status="failed",
             duration_seconds=time.perf_counter() - case_started,
             steps=(*completed, failed, *self._skipped(case.steps[index + 1 :])),
+            logins=logins or [],
         )
         # 日志不得包含 log_reason / traceback：它们可能带有 password/token/Cookie 原值。
         # 只保留定位所需的安全信息：case、step、kind、stage、原始异常的类型名。
@@ -337,3 +365,8 @@ class CaseRunner:
         return EngineInternalError(
             "execution", public_message, log_reason=log_reason, partial_outcome=partial
         )
+
+
+def _logins(pool: Any) -> list[JsonObject]:
+    """会话池的公开登录记录（已脱敏）；无池时为空列表。"""
+    return [] if pool is None else pool.public_logins()

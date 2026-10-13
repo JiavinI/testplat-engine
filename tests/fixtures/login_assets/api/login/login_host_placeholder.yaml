@@ -1,0 +1,6 @@
+id: api.login.login_host_placeholder
+name: 资产引用 login_host
+host: target
+method: GET
+url: "/echo/token?from=${login_host}"
+auth: none

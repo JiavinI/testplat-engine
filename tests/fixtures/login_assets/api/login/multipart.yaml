@@ -1,0 +1,9 @@
+id: api.login.multipart
+name: multipart 本批不支持
+host: target
+method: POST
+url: /echo/raw
+auth: none
+request:
+  type: multipart
+  body: {}

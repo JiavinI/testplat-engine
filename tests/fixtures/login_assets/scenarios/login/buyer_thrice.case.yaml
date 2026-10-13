@@ -1,0 +1,7 @@
+schema_version: "0.2"
+id: case.login.buyer_thrice
+name: 同一身份三次
+steps:
+  - {step_id: b1, type: api, api_id: api.login.buyer_echo}
+  - {step_id: b2, type: api, api_id: api.login.buyer_echo}
+  - {step_id: b3, type: api, api_id: api.login.buyer_echo}

@@ -1,0 +1,6 @@
+schema_version: "0.2"
+id: case.login.seller_twice
+name: Cookie 身份两次
+steps:
+  - {step_id: s1, type: api, api_id: api.login.seller_echo}
+  - {step_id: s2, type: api, api_id: api.login.seller_echo}

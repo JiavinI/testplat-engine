@@ -122,7 +122,8 @@ def _finite_non_negative_seconds(value: float, field_name: str) -> float:
 # 边界：Control 负责读取 auth 配置与环境变量并构造下列 DTO；Engine 只在预检时
 # 按资产声明查表、在 client.request 调用处注入 header、并在公开面按名 + 按值脱敏。
 # 不变量：秘密值只能经 SecretStr.reveal() 取出，且全仓只有
-# engine/auth_injection.py 调用；任何 repr/str/to_dict/异常消息都不含秘密值。
+# engine/auth_injection.py 与（3.3b）engine/login_render.py 调用；
+# 任何 repr/str/to_dict/异常消息都不含秘密值。
 # ---------------------------------------------------------------------------
 
 # 秘密最小长度：过短的值做按值替换会误伤正常文本（设计稿 §5.3）。
@@ -138,7 +139,7 @@ class SecretStr:
 
     - ``repr`` / ``str`` / ``format`` 一律为 ``***``；
     - ``to_dict``、pickle/copy、``json.dumps`` 都显式抛错，防止误写入快照或记录；
-    - 只能经 ``reveal()`` 取值；该调用点受测试约束（只允许注入模块）。
+    - 只能经 ``reveal()`` 取值；该调用点受测试约束（只允许注入模块与登录渲染模块，L3）。
     构造错误消息只描述类型，绝不回显传入值（M1）。
     """
 
@@ -293,9 +294,609 @@ class UnavailableAuth:
         return {"kind": self.kind}
 
 
-# 判别联合：3.3b 追加 LoginTokenAuth / LoginCookieAuth。Engine 遇到未知 kind 在预检报
-# invalid_environment，绝不静默降级为匿名（设计稿 §9）。
-AuthMaterial: TypeAlias = StaticHeaderAuth | UnavailableAuth
+# ---------------------------------------------------------------------------
+# 3.3b 登录鉴权 DTO（设计稿 §5.3，D7–D15）
+#
+# 边界：Control 解析 auth 配置 + 环境变量，构造下列 DTO（模板中的 ${secret:} 已渲染为
+# SecretStr，${login:名字} / ${login_host} 原样保留给 Engine 在登录/注入时渲染）。
+# 不变量：repr / to_dict 只暴露策略名、tier、host、步骤名、提取名、header 名；
+# 一律禁止 pickle/copy；构造错误消息不回显任何字段值。
+# ---------------------------------------------------------------------------
+
+LOGIN_BODY_TYPES = frozenset({"json", "form", "query", "raw"})
+EXTRACT_SOURCES = frozenset({"body_json", "response_header", "cookies", "html_meta"})
+LOGIN_TIERS = frozenset({"generic", "configured", "plugin"})
+EXPIRES_UNITS = frozenset({"seconds", "epoch_ms", "epoch_s"})
+# login_failed 的 reason 枚举（手册 §4 第 8 条）。
+LOGIN_FAILURE_REASONS = (
+    "assertion",
+    "extract_missing",
+    "token_too_short",
+    "probe_failed",
+    "timeout",
+    "transport",
+    "strategy_error",
+)
+# 内置策略名；插件不得与之重名（create_engine 启动期拒绝）。
+GENERIC_FLOW = "generic_flow"
+# 命名值 / 策略名：保守的标识符语法，保证可安全出现在错误消息与日志里。
+_LOGIN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,63}$")
+# 模板中引用命名值的占位符：${login:名字}
+LOGIN_REF_RE = re.compile(r"\$\{login:([^}]*)\}")
+LOGIN_HOST_PLACEHOLDER = "${login_host}"
+
+Template: TypeAlias = "str | SecretStr"
+
+
+def _check_login_name(value: object, field_name: str) -> str:
+    """校验命名值 / 步骤名 / 策略名；错误消息只报字段位置。"""
+    if not isinstance(value, str) or not _LOGIN_NAME_RE.fullmatch(value):
+        raise ValueError(f"{field_name} 必须是 1–64 位标识符")
+    return value
+
+
+def _check_template(value: object, field_name: str) -> None:
+    if not isinstance(value, (str, SecretStr)):
+        raise TypeError(f"{field_name} 必须是 str 或 SecretStr")
+
+
+def _template_text_refs(value: object) -> set[str]:
+    """取模板里的 ${login:名字} 引用；SecretStr 内部的引用由渲染模块解析（此处不 reveal）。"""
+    if isinstance(value, str):
+        return set(LOGIN_REF_RE.findall(value))
+    return set()
+
+
+def _copy_templates(value: object, field_name: str, *, headers: bool) -> MappingProxyType:
+    """复制 header / 参数模板映射；header 名按 RFC 7230 与大小写去重校验。"""
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} 必须是映射")
+    copied: dict[str, object] = {}
+    seen: set[str] = set()
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{field_name} 含非法键")
+        if headers:
+            if not _HEADER_NAME_RE.fullmatch(key):
+                raise ValueError(f"{field_name} 含非法 header 名")
+            if key.lower() in seen:
+                raise ValueError(f"{field_name} 中 header 名大小写重复: {key}")
+            seen.add(key.lower())
+            _check_template(item, f"{field_name}[{key}]")
+        copied[key] = item
+    return MappingProxyType(copied)
+
+
+def _check_body_fields(value: object, field_name: str) -> object:
+    """登录请求体字段：JSON 值或 SecretStr，任意嵌套；返回深冻结副本。"""
+    if isinstance(value, SecretStr) or value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{field_name} 不能含 NaN/无穷")
+        return value
+    if isinstance(value, (list, tuple)):
+        return tuple(_check_body_fields(item, field_name) for item in value)
+    if isinstance(value, Mapping):
+        out: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{field_name} 的键必须是字符串")
+            out[key] = _check_body_fields(item, field_name)
+        return MappingProxyType(out)
+    raise TypeError(f"{field_name} 只允许 JSON 值或 SecretStr")
+
+
+class _NoPickle:
+    """含（或可能含）秘密的 DTO 共用：禁止 pickle/copy。"""
+
+    __slots__ = ()
+
+    def __reduce__(self) -> object:
+        raise TypeError(f"{type(self).__name__} 不可 pickle/copy")
+
+    def __reduce_ex__(self, protocol: object) -> object:
+        raise TypeError(f"{type(self).__name__} 不可 pickle/copy")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ExtractRule(_NoPickle):
+    """一条提取规则（D10）：从登录响应取一个命名值。
+
+    - ``body_json``：``path``（简化 JSONPath，``$.a.b``）；
+    - ``response_header``：``name``（不区分大小写）；
+    - ``cookies``：``name`` 按名取值，或 ``format="cookie_header"`` 取整个 jar 的 Cookie 头；
+    - ``html_meta``：``name`` 为 ``<meta name=...>`` 的名字，取其 content。
+    ``as_name`` 即配置里的 ``as``。``optional=True`` 时取不到不算失败。
+    """
+
+    source: str
+    as_name: str
+    path: str | None = None
+    name: str | None = None
+    format: str | None = None
+    optional: bool = False
+
+    def __post_init__(self) -> None:
+        if self.source not in EXTRACT_SOURCES:
+            raise ValueError("ExtractRule.source 不受支持")
+        _check_login_name(self.as_name, "ExtractRule.as")
+        if self.source == "body_json":
+            if not isinstance(self.path, str) or not self.path.startswith("$"):
+                raise ValueError("ExtractRule(body_json) 需要以 $ 开头的 path")
+        elif self.source == "cookies":
+            if self.format not in (None, "cookie_header"):
+                raise ValueError("ExtractRule(cookies).format 只支持 cookie_header")
+            if self.format is None and (not isinstance(self.name, str) or not self.name):
+                raise ValueError("ExtractRule(cookies) 需要 name 或 format=cookie_header")
+        elif not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"ExtractRule({self.source}) 需要 name")
+        if not isinstance(self.optional, bool):
+            raise TypeError("ExtractRule.optional 必须是布尔值")
+
+    def __repr__(self) -> str:
+        return f"ExtractRule(source={self.source!r}, as={self.as_name!r})"
+
+    __str__ = __repr__
+
+    def to_dict(self) -> JsonObject:
+        return {"source": self.source, "as": self.as_name}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LoginBody(_NoPickle):
+    """登录请求体（D11）：json / form / query 用 ``fields``；raw 用 ``content``。
+
+    Q4：显式 ``Content-Type`` 头优先；raw 必须有 ``content_type`` 或显式头（由
+    ``LoginStep`` 校验，因为头在步骤上）。
+    """
+
+    type: str = "json"
+    fields: Mapping[str, object] | None = None
+    content: Template | None = None
+    content_type: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.type not in LOGIN_BODY_TYPES:
+            # multipart 本批不支持（§9）。
+            raise ValueError("LoginBody.type 必须是 json/form/query/raw")
+        if self.type == "raw":
+            _check_template(self.content, "LoginBody.content")
+            if self.fields is not None:
+                raise ValueError("LoginBody(raw) 不能带 fields")
+        else:
+            if self.content is not None:
+                raise ValueError("只有 raw 请求体可以带 content")
+            fields = self.fields if self.fields is not None else {}
+            if not isinstance(fields, Mapping):
+                raise TypeError("LoginBody.fields 必须是映射")
+            frozen = _check_body_fields(fields, "LoginBody.fields")
+            if self.type in ("form", "query"):
+                for key, item in fields.items():
+                    if not isinstance(item, (str, int, float, bool, SecretStr)):
+                        raise ValueError(f"LoginBody({self.type}).fields[{key}] 必须是标量")
+            object.__setattr__(self, "fields", frozen)
+        if self.content_type is not None and not isinstance(self.content_type, str):
+            raise TypeError("LoginBody.content_type 必须是字符串")
+
+    def __repr__(self) -> str:
+        return f"LoginBody(type={self.type!r})"
+
+    __str__ = __repr__
+
+
+def _check_success_spec(value: object, field_name: str) -> MappingProxyType | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} 必须是映射")
+    return MappingProxyType(_json_object(value, field_name))
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LoginStep(_NoPickle):
+    """``generic_flow`` 的一个登录步骤。
+
+    ``path`` / ``headers`` / ``body`` 可引用 ``${login:名字}``（前序步骤提取）与
+    ``${login_host}``；``success`` 未写时默认“状态码 < 400”（Q3）。
+    """
+
+    name: str
+    method: str
+    path: str
+    headers: Mapping[str, Template] | None = None
+    body: LoginBody | None = None
+    success: Mapping[str, JsonValue] | None = None
+    extract: Sequence[ExtractRule] = ()
+
+    def __post_init__(self) -> None:
+        _check_login_name(self.name, "LoginStep.name")
+        if not isinstance(self.method, str) or not self.method.strip():
+            raise ValueError(f"LoginStep[{self.name}].method 不能为空")
+        object.__setattr__(self, "method", self.method.upper())
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError(f"LoginStep[{self.name}].path 不能为空")
+        object.__setattr__(
+            self,
+            "headers",
+            _copy_templates(self.headers, f"LoginStep[{self.name}].headers", headers=True),
+        )
+        if self.body is not None and not isinstance(self.body, LoginBody):
+            raise TypeError(f"LoginStep[{self.name}].body 必须是 LoginBody")
+        if self.body is not None and self.body.type == "raw":
+            has_header = any(k.lower() == "content-type" for k in self.headers)  # type: ignore[union-attr]
+            if not self.body.content_type and not has_header:
+                raise ValueError(f"LoginStep[{self.name}] 的 raw 请求体需要 content_type")
+        object.__setattr__(
+            self, "success", _check_success_spec(self.success, f"LoginStep[{self.name}].success")
+        )
+        rules = tuple(self.extract)
+        for rule in rules:
+            if not isinstance(rule, ExtractRule):
+                raise TypeError(f"LoginStep[{self.name}].extract 元素必须是 ExtractRule")
+        object.__setattr__(self, "extract", rules)
+
+    def referenced_names(self) -> set[str]:
+        """步骤模板（明文部分）引用的命名值，供预检核对来源。"""
+        refs = _template_text_refs(self.path)
+        for item in self.headers.values():  # type: ignore[union-attr]
+            refs |= _template_text_refs(item)
+        if self.body is not None:
+            refs |= _template_text_refs(self.body.content)
+            refs |= _nested_refs(self.body.fields)
+        return refs
+
+    def __repr__(self) -> str:
+        return (
+            f"LoginStep(name={self.name!r}, header_names={list(self.headers or {})!r}, "
+            f"extract={[r.as_name for r in self.extract]!r})"
+        )
+
+    __str__ = __repr__
+
+
+def _nested_refs(value: object) -> set[str]:
+    if isinstance(value, str):
+        return _template_text_refs(value)
+    if isinstance(value, Mapping):
+        out: set[str] = set()
+        for item in value.values():
+            out |= _nested_refs(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        out = set()
+        for item in value:
+            out |= _nested_refs(item)
+        return out
+    return set()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LoginFlow(_NoPickle):
+    """``generic_flow`` 的步骤序列（第 1 档单步 / 第 2 档多步）。"""
+
+    steps: Sequence[LoginStep]
+
+    def __post_init__(self) -> None:
+        steps = tuple(self.steps)
+        if not steps:
+            raise ValueError("LoginFlow.steps 不能为空")
+        names: set[str] = set()
+        for step in steps:
+            if not isinstance(step, LoginStep):
+                raise TypeError("LoginFlow.steps 元素必须是 LoginStep")
+            if step.name in names:
+                raise ValueError(f"LoginFlow 步骤名重复: {step.name}")
+            names.add(step.name)
+        object.__setattr__(self, "steps", steps)
+
+    def extracted_names(self) -> set[str]:
+        return {rule.as_name for step in self.steps for rule in step.extract}
+
+    def __repr__(self) -> str:
+        return f"LoginFlow(steps={[s.name for s in self.steps]!r})"
+
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ProbeSpec(_NoPickle):
+    """登录后立即执行的会话验证请求；失败 → ``login_failed(reason=probe_failed)``。
+
+    ``success`` 未写时默认“状态码 < 400”（Q3）；另支持 ``body_not_contains`` 与
+    ``reject_location_contains``。
+    """
+
+    method: str = "GET"
+    path: str = "/"
+    headers: Mapping[str, Template] | None = None
+    success: Mapping[str, JsonValue] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.method, str) or not self.method.strip():
+            raise ValueError("ProbeSpec.method 不能为空")
+        object.__setattr__(self, "method", self.method.upper())
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError("ProbeSpec.path 不能为空")
+        object.__setattr__(
+            self, "headers", _copy_templates(self.headers, "ProbeSpec.headers", headers=True)
+        )
+        object.__setattr__(self, "success", _check_success_spec(self.success, "ProbeSpec.success"))
+
+    def __repr__(self) -> str:
+        return f"ProbeSpec(method={self.method!r}, path={self.path!r})"
+
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ExpiresFrom(_NoPickle):
+    """从登录响应取过期时间（§5.4）；优先于 ``ttl_seconds``。
+
+    ``step`` 省略时取最后一个登录步骤的响应。
+    """
+
+    path: str
+    unit: str = "seconds"
+    source: str = "body_json"
+    step: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.source != "body_json":
+            raise ValueError("ExpiresFrom.source 只支持 body_json")
+        if not isinstance(self.path, str) or not self.path.startswith("$"):
+            raise ValueError("ExpiresFrom.path 必须以 $ 开头")
+        if self.unit not in EXPIRES_UNITS:
+            raise ValueError("ExpiresFrom.unit 必须是 seconds/epoch_ms/epoch_s")
+        if self.step is not None:
+            _check_login_name(self.step, "ExpiresFrom.step")
+
+    def __repr__(self) -> str:
+        return f"ExpiresFrom(unit={self.unit!r})"
+
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class Validity(_NoPickle):
+    """有效性规则（D13/E3）：ttl / 响应过期时间 / Cookie expires，固定提前 30 秒判失效。"""
+
+    ttl_seconds: float | None = None
+    expires_from: ExpiresFrom | None = None
+
+    def __post_init__(self) -> None:
+        if self.ttl_seconds is not None:
+            if isinstance(self.ttl_seconds, bool) or not isinstance(self.ttl_seconds, (int, float)):
+                raise TypeError("Validity.ttl_seconds 必须是数字")
+            if not math.isfinite(self.ttl_seconds) or self.ttl_seconds <= 0:
+                raise ValueError("Validity.ttl_seconds 必须是有限正数")
+        if self.expires_from is not None and not isinstance(self.expires_from, ExpiresFrom):
+            raise TypeError("Validity.expires_from 必须是 ExpiresFrom")
+
+    def __repr__(self) -> str:
+        return (
+            f"Validity(ttl_seconds={self.ttl_seconds!r}, "
+            f"expires_from={self.expires_from is not None})"
+        )
+
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LoginAuth(_NoPickle):
+    """3.3b 登录身份（kind = "login"）：按需登录换取命名值 / Cookie 后注入。
+
+    - ``strategy``：``generic_flow``（第 1/2 档，必须带 ``flow``）或插件名（第 3 档）；
+    - ``tier``：Control 按 §1.1 判定的档位，非秘密，进入公开 ``auth`` / ``logins``；
+    - ``params``：插件参数，SecretStr 值全部进入执行级按值替换集合；
+    - ``secret_values``：渲染前的原始 ``${secret:}`` 值（同 3.3a A1），≥ 8；
+    - ``inject_headers``：header 名 → 模板（字面量 / ``${login:名字}`` / SecretStr 任意组合）；
+    - Q1/Q2：至少一个 inject 值引用 ``${login:}``，或 ``session_cookie=True``。
+    """
+
+    strategy: str
+    host: str
+    tier: str = "generic"
+    flow: LoginFlow | None = None
+    params: Mapping[str, Template] | None = None
+    secret_values: Sequence[SecretStr] = ()
+    validity: Validity | None = None
+    session_cookie: bool = False
+    probe: ProbeSpec | None = None
+    inject_headers: Mapping[str, Template] | None = None
+    kind: Literal["login"] = "login"
+
+    def __post_init__(self) -> None:
+        if self.kind != "login":
+            raise ValueError("LoginAuth.kind 必须是 login")
+        _check_login_name(self.strategy, "LoginAuth.strategy")
+        if not isinstance(self.host, str) or not self.host.strip():
+            raise ValueError("LoginAuth.host 必须是非空字符串")
+        if self.tier not in LOGIN_TIERS:
+            raise ValueError("LoginAuth.tier 必须是 generic/configured/plugin")
+        if self.strategy == GENERIC_FLOW:
+            if not isinstance(self.flow, LoginFlow):
+                raise ValueError("generic_flow 身份必须提供 LoginFlow")
+        elif self.flow is not None and not isinstance(self.flow, LoginFlow):
+            raise TypeError("LoginAuth.flow 必须是 LoginFlow 或 None")
+        object.__setattr__(
+            self, "params", _copy_templates(self.params, "LoginAuth.params", headers=False)
+        )
+        for key, item in self.params.items():  # type: ignore[union-attr]
+            _check_template(item, f"LoginAuth.params[{key}]")
+        if isinstance(self.secret_values, (str, bytes)) or not isinstance(
+            self.secret_values, Sequence
+        ):
+            raise TypeError("LoginAuth.secret_values 必须是 SecretStr 序列")
+        raw = tuple(self.secret_values)
+        for index, item in enumerate(raw):
+            if not isinstance(item, SecretStr):
+                raise TypeError(f"LoginAuth.secret_values[{index}] 必须是 SecretStr")
+            if len(item) < MIN_SECRET_LENGTH:
+                raise ValueError(f"LoginAuth.secret_values[{index}] 长度不足 {MIN_SECRET_LENGTH}")
+        object.__setattr__(self, "secret_values", raw)
+        if self.validity is None:
+            object.__setattr__(self, "validity", Validity())
+        elif not isinstance(self.validity, Validity):
+            raise TypeError("LoginAuth.validity 必须是 Validity")
+        if not isinstance(self.session_cookie, bool):
+            raise TypeError("LoginAuth.session_cookie 必须是布尔值")
+        if self.probe is not None and not isinstance(self.probe, ProbeSpec):
+            raise TypeError("LoginAuth.probe 必须是 ProbeSpec")
+        object.__setattr__(
+            self,
+            "inject_headers",
+            _copy_templates(self.inject_headers, "LoginAuth.inject_headers", headers=True),
+        )
+        if not self.session_cookie and not self.inject_refs() and not self._secret_inject():
+            raise ValueError("login 身份至少需要一个引用 ${login:} 的 inject 值或 session: cookie")
+
+    def _secret_inject(self) -> bool:
+        # SecretStr 模板内部可能含 ${login:}（Control 渲染 ${secret:} 后整体包装），
+        # 这里无法在不 reveal 的前提下判断，因此视为可能满足 Q1，交给渲染期核对。
+        return any(isinstance(v, SecretStr) for v in self.inject_headers.values())  # type: ignore[union-attr]
+
+    def inject_refs(self) -> set[str]:
+        """inject 模板明文部分引用的命名值。"""
+        refs: set[str] = set()
+        for item in self.inject_headers.values():  # type: ignore[union-attr]
+            refs |= _template_text_refs(item)
+        return refs
+
+    @property
+    def header_names(self) -> tuple[str, ...]:
+        return tuple(self.inject_headers or {})
+
+    def to_dict(self) -> JsonObject:
+        """只输出非秘密结构信息。"""
+        return {
+            "kind": self.kind,
+            "strategy": self.strategy,
+            "tier": self.tier,
+            "host": self.host,
+            "steps": [] if self.flow is None else [s.name for s in self.flow.steps],
+            "extract": [] if self.flow is None else sorted(self.flow.extracted_names()),
+            "header_names": list(self.header_names),
+            "session_cookie": self.session_cookie,
+        }
+
+    def __repr__(self) -> str:
+        return f"LoginAuth({self.to_dict()!r})"
+
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LoginResult(_NoPickle):
+    """策略返回值：命名值（全部视为秘密）与可选过期时间（epoch 秒）。"""
+
+    values: Mapping[str, str]
+    expires_at: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.values, Mapping):
+            raise TypeError("LoginResult.values 必须是映射")
+        copied: dict[str, str] = {}
+        for key, item in self.values.items():
+            _check_login_name(key, "LoginResult.values 键")
+            if not isinstance(item, str):
+                raise TypeError(f"LoginResult.values[{key}] 必须是字符串")
+            copied[key] = item
+        object.__setattr__(self, "values", MappingProxyType(copied))
+        if self.expires_at is not None:
+            if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+                raise TypeError("LoginResult.expires_at 必须是数字")
+            if not math.isfinite(self.expires_at):
+                raise ValueError("LoginResult.expires_at 必须有限")
+
+    def __repr__(self) -> str:
+        has_expires = self.expires_at is not None
+        return f"LoginResult(names={sorted(self.values)!r}, has_expires={has_expires})"
+
+    __str__ = __repr__
+
+
+class LoginRecorder(Protocol):
+    """登录过程记录回调：Engine 先缓存原始请求/响应，``login()`` 结束后统一脱敏（Q7）。"""
+
+    def __call__(
+        self, request: Mapping[str, object], response: Mapping[str, object] | None, *,
+        name: str | None = None,
+    ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True, repr=False, eq=False)
+class LoginContext(_NoPickle):
+    """Engine 交给登录策略的全部材料（硬约束 3）。
+
+    插件只能看到：该身份专用 HTTP client（自带 cookie jar，本次执行内存活）、已解析的
+    登录 host URL、策略参数、``connections``、记录回调；另附 ``flow``（本身份自己的流程，
+    插件策略通常为 None）、``timeout_seconds``（每个请求的超时）与身份名。
+    拿不到资产、业务 client、其它身份状态或 Control 对象。
+    """
+
+    identity: str
+    http: object
+    host_url: str
+    params: Mapping[str, Template]
+    connections: Mapping[str, Mapping[str, Template]]
+    record: LoginRecorder
+    flow: LoginFlow | None = None
+    timeout_seconds: float = 30.0
+
+    def __repr__(self) -> str:
+        return (
+            f"LoginContext(identity={self.identity!r}, host_url={self.host_url!r}, "
+            f"param_names={sorted(self.params)!r}, "
+            f"connections={ {k: sorted(v) for k, v in self.connections.items()}!r})"
+        )
+
+    __str__ = __repr__
+
+
+class LoginStrategy(Protocol):
+    """登录策略插件协议（D15 方案 C）；内置实现为 ``generic_flow``。
+
+    稳定性承诺见 ``docs/COMPATIBILITY-0.4.md``：0.4.x 内只增不改。
+    - ``validate``：预检期调用，不得发请求；抛任何异常 → ``invalid_environment``；
+    - ``login``：抛任何异常 → ``login_failed(reason=strategy_error)``（timeout/transport
+      类异常分别归为 ``timeout`` / ``transport``），只记异常类型名。
+    """
+
+    name: str
+
+    def validate(self, auth: LoginAuth) -> None: ...
+
+    async def login(self, ctx: LoginContext) -> LoginResult: ...
+
+
+def _copy_connections(value: object) -> MappingProxyType:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise TypeError("AuthTable.connections 必须是映射")
+    out: dict[str, MappingProxyType] = {}
+    for name, fields in value.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("AuthTable.connections 含非法连接名")
+        if not isinstance(fields, Mapping):
+            raise TypeError(f"AuthTable.connections[{name}] 必须是映射")
+        inner: dict[str, object] = {}
+        for key, item in fields.items():
+            if not isinstance(key, str):
+                raise TypeError(f"AuthTable.connections[{name}] 键必须是字符串")
+            if not isinstance(item, (str, int, float, bool, SecretStr)) or item is None:
+                raise TypeError(f"AuthTable.connections[{name}][{key}] 必须是标量或 SecretStr")
+            inner[key] = item
+        out[name] = MappingProxyType(inner)
+    return MappingProxyType(out)
+
+
+# 判别联合（L2）：3.3b 追加单一 ``LoginAuth``（kind="login"，第 1/2/3 档共用）。
+# Engine 遇到未知 kind 在预检报 invalid_environment，绝不静默降级为匿名（设计稿 §9）。
+AuthMaterial: TypeAlias = StaticHeaderAuth | UnavailableAuth | LoginAuth
 
 
 def _material_kind(material: object) -> str | None:
@@ -315,8 +916,11 @@ class AuthTable:
 
     identities: Mapping[str, AuthMaterial]
     default_identity: str | None = None
+    # 3.3b：插件可用的连接信息（非秘密字段原样，密码为 SecretStr）；只交给插件策略。
+    connections: Mapping[str, Mapping[str, Template]] | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "connections", _copy_connections(self.connections))
         if not isinstance(self.identities, Mapping):
             raise TypeError("AuthTable.identities 必须是映射")
         copied: dict[str, AuthMaterial] = {}
@@ -340,8 +944,17 @@ class AuthTable:
             entry: JsonObject = {"kind": _material_kind(material)}
             if isinstance(material, StaticHeaderAuth):
                 entry["header_names"] = list(material.headers)
+            elif isinstance(material, LoginAuth):
+                entry = material.to_dict()
             identities[name] = entry
-        return {"identities": identities, "default_identity": self.default_identity}
+        payload: JsonObject = {
+            "identities": identities,
+            "default_identity": self.default_identity,
+        }
+        if self.connections:
+            # 只输出连接名，字段（含密码）一律不外显。
+            payload["connection_names"] = sorted(self.connections)  # type: ignore[arg-type]
+        return payload
 
     def __repr__(self) -> str:
         return f"AuthTable({self.to_dict()!r})"
@@ -360,27 +973,88 @@ def _validate_auth_table(value: object) -> None:
         raise TypeError("auth 必须是 AuthTable 或 None")
 
 
-_PUBLIC_AUTH_KEYS = ("identity", "header_names", "overridden_headers")
+_PUBLIC_AUTH_KEYS = (
+    "identity",
+    "kind",
+    "tier",
+    "header_names",
+    "overridden_headers",
+    "cookie_names",
+    "login_ref",
+)
+_PUBLIC_AUTH_KINDS = frozenset({"static_headers", "login"})
 
 
 def _public_auth(value: object) -> object:
-    """公开 auth 字段（Q1）：{identity, header_names, overridden_headers} 或 None。"""
+    """公开 auth 字段（0.4 七键）。
+
+    ``{identity, kind, tier, header_names, overridden_headers, cookie_names, login_ref}``
+    或 None；静态 header 身份 ``tier=None``、``cookie_names=[]``、``login_ref=None``。
+    """
     if value is None:
         return None
     if not isinstance(value, Mapping) or set(value) != set(_PUBLIC_AUTH_KEYS):
-        raise ValueError("auth 必须恰好包含 identity / header_names / overridden_headers")
+        raise ValueError("auth 必须恰好包含 " + " / ".join(_PUBLIC_AUTH_KEYS))
     identity = value["identity"]
     if not isinstance(identity, str) or not identity:
         raise TypeError("auth.identity 必须是非空字符串")
+    kind = value["kind"]
+    if kind not in _PUBLIC_AUTH_KINDS:
+        raise ValueError("auth.kind 必须是 static_headers 或 login")
+    tier = value["tier"]
+    if kind == "static_headers":
+        if tier is not None:
+            raise ValueError("静态 header 身份的 auth.tier 必须为 null")
+    elif tier not in LOGIN_TIERS:
+        raise ValueError("login 身份的 auth.tier 必须是 generic/configured/plugin")
     names: dict[str, list[str]] = {}
-    for key in ("header_names", "overridden_headers"):
+    for key in ("header_names", "overridden_headers", "cookie_names"):
         items = value[key]
         if isinstance(items, (str, bytes)) or not isinstance(items, Sequence):
             raise TypeError(f"auth.{key} 必须是字符串列表")
         if not all(isinstance(item, str) for item in items):
             raise TypeError(f"auth.{key} 必须是字符串列表")
         names[key] = list(items)
-    return _freeze_json({"identity": identity, **names})
+    login_ref = value["login_ref"]
+    if login_ref is not None and (
+        isinstance(login_ref, bool) or not isinstance(login_ref, int) or login_ref < 0
+    ):
+        raise TypeError("auth.login_ref 必须是非负整数或 null")
+    if kind == "static_headers" and (login_ref is not None or names["cookie_names"]):
+        raise ValueError("静态 header 身份不能带 cookie_names / login_ref")
+    return _freeze_json(
+        {
+            "identity": identity,
+            "kind": kind,
+            "tier": tier,
+            "header_names": names["header_names"],
+            "overridden_headers": names["overridden_headers"],
+            "cookie_names": names["cookie_names"],
+            "login_ref": login_ref,
+        }
+    )
+
+
+# skip_reason 枚举（H4）：fail_fast = 前序业务/系统失败；login_failed = 前序登录失败。
+SKIP_REASONS = ("fail_fast", "login_failed")
+
+
+def _public_logins(value: object) -> tuple[object, ...]:
+    """公开登录记录列表：每条为 JSON 对象，键级脱敏后深冻结。
+
+    按值替换由 Engine 在构造前完成（Q7：先缓存后脱敏），这里只做兜底的按键脱敏。
+    """
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Sequence):
+        raise TypeError("logins 必须是 JSON 对象列表")
+    out: list[object] = []
+    for index, item in enumerate(value):
+        if isinstance(item, Mapping):
+            out.append(_snapshot_object(item, f"logins[{index}]", redact=True))
+        else:
+            raise TypeError("logins 元素必须是 JSON 对象")
+    return tuple(out)
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,12 +1107,15 @@ class ApiExecutionOutcome:
     request: JsonObject | None = None
     response: JsonValue | None = None
     error: JsonObject | None = None
-    # 公开身份信息（Q1）：{identity, header_names, overridden_headers} 或 None（匿名）。
+    # 公开身份信息（0.4 七键）或 None（匿名）。
     auth: JsonObject | None = None
+    # 3.3b：本次执行发生的登录记录（按发生顺序，已脱敏）；步骤 auth.login_ref 为其下标。
+    logins: Sequence[JsonObject] = ()
 
     def __post_init__(self) -> None:
         if self.status not in ("success", "failed"):
             raise ValueError("status 必须是 success 或 failed")
+        object.__setattr__(self, "logins", _public_logins(self.logins))
         if self.status == "failed" and not self.error:
             raise ValueError("业务 failed 结果必须包含 error")
         if self.status == "success" and self.error is not None:
@@ -464,6 +1141,7 @@ class ApiExecutionOutcome:
             "response": None if self.response is None else _thaw_json(self.response),
             "error": None if self.error is None else _thaw_json(self.error),
             "auth": None if self.auth is None else _thaw_json(self.auth),
+            "logins": [_thaw_json(item) for item in self.logins],
         }
 
 
@@ -557,8 +1235,8 @@ class StepOutcome:
                 raise ValueError("skipped 步骤的 duration_seconds 必须为 0")
             if self.request is not None or self.response is not None or self.error is not None:
                 raise ValueError("skipped 步骤的 request/response/error 必须为 null")
-            if self.skip_reason != "fail_fast":
-                raise ValueError("skipped 步骤的 skip_reason 必须为 fail_fast")
+            if self.skip_reason not in SKIP_REASONS:
+                raise ValueError("skipped 步骤的 skip_reason 必须为 fail_fast 或 login_failed")
             if self.auth is not None:
                 raise ValueError("skipped 步骤的 auth 必须为 null")
 
@@ -617,10 +1295,13 @@ class CaseExecutionOutcome:
     status: ExecutionStatus
     duration_seconds: float
     steps: tuple[StepOutcome, ...]
+    # 3.3b：整个 Case 的登录记录（执行级，按发生顺序）；步骤 auth.login_ref 为其下标。
+    logins: Sequence[JsonObject] = ()
 
     def __post_init__(self) -> None:
         if not self.case_id:
             raise ValueError("case_id 不能为空")
+        object.__setattr__(self, "logins", _public_logins(self.logins))
         if self.status not in ("success", "failed"):
             raise ValueError("status 必须是 success 或 failed")
         duration = _finite_non_negative_seconds(self.duration_seconds, "duration_seconds")
@@ -658,6 +1339,7 @@ class CaseExecutionOutcome:
             "duration_seconds": self.duration_seconds,
             "steps": [step.to_dict() for step in self.steps],
             "summary": dict(self.summary),
+            "logins": [_thaw_json(item) for item in self.logins],
         }
 
 
@@ -880,14 +1562,25 @@ __all__ = [
     "EngineUnavailableError",
     "ExecutionOutcome",
     "ExecutionRequest",
+    "ExpiresFrom",
+    "ExtractRule",
     "InvalidAssetError",
     "InvalidEnvironmentError",
     "InvalidInputError",
     "JsonObject",
     "JsonValue",
+    "LoginAuth",
+    "LoginBody",
+    "LoginContext",
+    "LoginFlow",
+    "LoginResult",
+    "LoginStep",
+    "LoginStrategy",
+    "ProbeSpec",
     "SecretStr",
     "StaticHeaderAuth",
     "StepOutcome",
     "StepStatus",
     "UnavailableAuth",
+    "Validity",
 ]

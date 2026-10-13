@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from testplat_engine.domain.api import Api
+from testplat_engine.shared.request_body import validate_asset_document
 
 
 def load_yaml(file_path: Path) -> dict[str, Any]:
@@ -75,6 +76,8 @@ def yaml_to_api(data: dict[str, Any]) -> Api:
     # 验证数据类型
     if not isinstance(request, dict):
         raise ValueError(f"request 必须是字典类型,实际为: {type(request).__name__}")
+    # 3.3b：占位符作用域（Q5）与 request.type（D11/Q4）；失败即 invalid_asset。
+    validate_asset_document(data)
     if not isinstance(success, dict):
         raise ValueError(f"success 必须是字典类型,实际为: {type(success).__name__}")
 

@@ -1,0 +1,6 @@
+schema_version: "0.2"
+id: case.login.plugin_late
+name: 末步使用未注册插件身份
+steps:
+  - {step_id: a1, type: api, api_id: api.login.anon_echo}
+  - {step_id: p1, type: api, api_id: api.login.plugin_echo}

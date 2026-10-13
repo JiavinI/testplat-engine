@@ -1,0 +1,13 @@
+id: api.login.query_echo
+name: query 请求体
+host: target
+method: GET
+url: /echo/query
+auth: buyer
+request:
+  type: query
+  body:
+    user: "${user}"
+    note: "${note}"
+success:
+  status_code: 200

@@ -1,6 +1,6 @@
 """testplat-engine: 通用接口自动化测试平台 - 执行引擎"""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from testplat_engine.engine.executor import SingleApiEngine, create_engine, run_api
 from testplat_engine.interface import (
@@ -19,13 +19,24 @@ from testplat_engine.interface import (
     EngineUnavailableError,
     ExecutionOutcome,
     ExecutionRequest,
+    ExpiresFrom,
+    ExtractRule,
     InvalidAssetError,
     InvalidEnvironmentError,
     InvalidInputError,
+    LoginAuth,
+    LoginBody,
+    LoginContext,
+    LoginFlow,
+    LoginResult,
+    LoginStep,
+    LoginStrategy,
+    ProbeSpec,
     SecretStr,
     StaticHeaderAuth,
     StepOutcome,
     UnavailableAuth,
+    Validity,
 )
 
 # 保留旧入口供基线示例使用；新 Control 集成依赖 EnginePort / create_engine / SingleApiEngine。
@@ -50,6 +61,17 @@ __all__ = [
     "InvalidAssetError",
     "InvalidEnvironmentError",
     "InvalidInputError",
+    "ExpiresFrom",
+    "ExtractRule",
+    "LoginAuth",
+    "LoginBody",
+    "LoginContext",
+    "LoginFlow",
+    "LoginResult",
+    "LoginStep",
+    "LoginStrategy",
+    "ProbeSpec",
+    "Validity",
     "SecretStr",
     "SingleApiEngine",
     "StaticHeaderAuth",

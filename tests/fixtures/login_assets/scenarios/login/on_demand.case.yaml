@@ -1,0 +1,7 @@
+schema_version: "0.2"
+id: case.login.on_demand
+name: 按需登录
+steps:
+  - {step_id: a1, type: api, api_id: api.login.anon_echo}
+  - {step_id: b1, type: api, api_id: api.login.buyer_echo}
+  - {step_id: b2, type: api, api_id: api.login.buyer_echo}
