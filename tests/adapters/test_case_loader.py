@@ -182,9 +182,7 @@ def test_m6_steps_index_ref_rejected() -> None:
 
 def test_m7_file_id_mismatch() -> None:
     raw = yaml.safe_load(
-        (FIXTURES / "scenarios" / "demo" / "g1_success.case.yaml").read_text(
-            encoding="utf-8"
-        )
+        (FIXTURES / "scenarios" / "demo" / "g1_success.case.yaml").read_text(encoding="utf-8")
     )
     with pytest.raises(InvalidAssetError) as ei:
         parse_case_dict(raw, expected_case_id="case.demo.other")

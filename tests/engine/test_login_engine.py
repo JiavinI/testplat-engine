@@ -86,6 +86,8 @@ async def test_tier1_buyer_login_inject_and_redact() -> None:
         "overridden_headers": [],
         "cookie_names": [],
         "login_ref": 0,
+        "session_source": "login",
+        "reauthenticated": False,
     }
     [record] = d["logins"]
     assert record["identity"] == "buyer" and record["strategy"] == "generic_flow"
@@ -443,10 +445,14 @@ async def test_business_timeout_after_login_still_system_error() -> None:
 
 
 async def test_business_401_is_assertion_without_relogin() -> None:
+    """关闭 401 重发时：业务 401 直接断言失败，不重登（设计稿 §6-40）。"""
     target = FakeTarget()
-    d = (await engine_for(target).execute(api("api.login.buyer_401", table()))).to_dict()
+    buyer = buyer_material(reauth_on_401=False)
+    d = (await engine_for(target).execute(api("api.login.buyer_401", table(buyer=buyer)))).to_dict()
     assert d["error"]["kind"] == "assertion"
+    assert d["auth"]["reauthenticated"] is False
     assert login_paths(target) == ["/login/json"]
+    assert_no_secrets(target, d)
 
 
 async def test_failed_login_masks_long_strings_q7() -> None:
@@ -690,6 +696,8 @@ async def test_auth_none_and_static_only_regression() -> None:
         "overridden_headers": [],
         "cookie_names": [],
         "login_ref": None,
+        "session_source": None,
+        "reauthenticated": False,
     }
     assert static["response"]["body"]["echo"]["authz"] == "***"
     assert login_paths(target) == []

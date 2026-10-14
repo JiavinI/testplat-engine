@@ -105,7 +105,7 @@ def _resolve_string(value: str, params: dict[str, Any]) -> str:
         解析后的字符串
     """
     # 匹配 ${variable_name} 模式
-    pattern = r'\$\{([^}]+)\}'
+    pattern = r"\$\{([^}]+)\}"
 
     def replace_match(match):
         var_name = match.group(1)

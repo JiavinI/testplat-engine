@@ -438,9 +438,7 @@ async def test_response_shape_not_checked_when_no_output_declared() -> None:
     "bad",
     [
         lambda s: success(CaseStep(step_id="other", type="api", api_id="x"), ok_response()),
-        lambda s: StepOutcome(
-            step_id=s.step_id, type="ui", status="success", duration_seconds=0.0
-        ),
+        lambda s: StepOutcome(step_id=s.step_id, type="ui", status="success", duration_seconds=0.0),
         lambda s: StepOutcome(
             step_id=s.step_id,
             type=s.type,

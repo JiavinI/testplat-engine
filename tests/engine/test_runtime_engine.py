@@ -138,9 +138,7 @@ def assets_root(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (api_dir / "invalid_missing_fields.yaml").write_text(
-        "id: api.common.invalid_missing_fields\n"
-        "name: 缺字段\n"
-        "method: GET\n",
+        "id: api.common.invalid_missing_fields\nname: 缺字段\nmethod: GET\n",
         encoding="utf-8",
     )
     return root
@@ -202,9 +200,7 @@ async def test_success_post_resolves_params(assets_root: Path, local_server: str
 
 
 @pytest.mark.asyncio
-async def test_assertion_failure_is_business_outcome(
-    assets_root: Path, local_server: str
-) -> None:
+async def test_assertion_failure_is_business_outcome(assets_root: Path, local_server: str) -> None:
     engine = SingleApiEngine()
     outcome = await engine.execute(
         _request(assets_root, "api.common.assert_fail", _env(local_server))
@@ -222,9 +218,7 @@ async def test_assertion_failure_is_business_outcome(
 async def test_asset_not_found(assets_root: Path, local_server: str) -> None:
     engine = SingleApiEngine()
     with pytest.raises(AssetNotFoundError) as exc_info:
-        await engine.execute(
-            _request(assets_root, "api.common.does_not_exist", _env(local_server))
-        )
+        await engine.execute(_request(assets_root, "api.common.does_not_exist", _env(local_server)))
     err = exc_info.value
     assert err.kind == "asset_not_found"
     assert err.stage == "preflight"
@@ -236,9 +230,7 @@ async def test_invalid_asset_missing_fields(assets_root: Path, local_server: str
     engine = SingleApiEngine()
     with pytest.raises(InvalidAssetError) as exc_info:
         await engine.execute(
-            _request(
-                assets_root, "api.common.invalid_missing_fields", _env(local_server)
-            )
+            _request(assets_root, "api.common.invalid_missing_fields", _env(local_server))
         )
     assert exc_info.value.kind == "invalid_asset"
     assert exc_info.value.stage == "preflight"
@@ -248,9 +240,7 @@ async def test_invalid_asset_missing_fields(assets_root: Path, local_server: str
 async def test_path_traversal_api_id_rejected(assets_root: Path, local_server: str) -> None:
     engine = SingleApiEngine()
     with pytest.raises(InvalidAssetError) as exc_info:
-        await engine.execute(
-            _request(assets_root, "api.common..secret", _env(local_server))
-        )
+        await engine.execute(_request(assets_root, "api.common..secret", _env(local_server)))
     assert exc_info.value.stage == "preflight"
 
 
@@ -258,9 +248,7 @@ async def test_path_traversal_api_id_rejected(assets_root: Path, local_server: s
 async def test_missing_env_host(assets_root: Path) -> None:
     engine = SingleApiEngine()
     with pytest.raises(InvalidEnvironmentError) as exc_info:
-        await engine.execute(
-            _request(assets_root, "api.common.get_status", {"api_hosts": {}})
-        )
+        await engine.execute(_request(assets_root, "api.common.get_status", {"api_hosts": {}}))
     err = exc_info.value
     assert err.kind == "invalid_environment"
     assert err.stage == "preflight"
@@ -271,9 +259,7 @@ async def test_missing_env_host(assets_root: Path) -> None:
 async def test_missing_api_hosts_key(assets_root: Path) -> None:
     engine = SingleApiEngine()
     with pytest.raises(InvalidEnvironmentError):
-        await engine.execute(
-            _request(assets_root, "api.common.get_status", {"other": 1})
-        )
+        await engine.execute(_request(assets_root, "api.common.get_status", {"other": 1}))
 
 
 @pytest.mark.asyncio
@@ -339,9 +325,7 @@ async def test_unknown_exception_maps_to_internal_execution(
 
 
 @pytest.mark.asyncio
-async def test_non_json_response_is_serializable(
-    assets_root: Path, local_server: str
-) -> None:
+async def test_non_json_response_is_serializable(assets_root: Path, local_server: str) -> None:
     engine = SingleApiEngine()
     outcome = await engine.execute(
         _request(assets_root, "api.common.plain_text", _env(local_server))
@@ -485,9 +469,7 @@ async def test_timeout_preserved_when_owned_client_close_fails(
             raise RuntimeError("close boom")
 
     engine = SingleApiEngine()
-    monkeypatch.setattr(
-        engine, "_acquire_client", lambda: (TimeoutThenBadClose(), True)
-    )
+    monkeypatch.setattr(engine, "_acquire_client", lambda: (TimeoutThenBadClose(), True))
     with pytest.raises(EngineTimeoutError) as exc_info:
         await engine.execute(
             _request(

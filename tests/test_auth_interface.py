@@ -80,7 +80,7 @@ def test_secret_str_immutable_and_rejects_non_str() -> None:
 
 
 def test_reveal_called_only_in_injection_module() -> None:
-    """全仓只有注入模块与登录渲染模块调用 reveal()（AST 约束，L3：防止未来新增泄密路径）。"""
+    """全仓只有注入/登录渲染/登录缓存模块调用 reveal()（AST 约束，L3）。"""
     callers: list[str] = []
     for path in SRC_ROOT.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -92,7 +92,11 @@ def test_reveal_called_only_in_injection_module() -> None:
             ):
                 callers.append(path.relative_to(SRC_ROOT).as_posix())
     assert callers, "未找到 reveal 调用，注入点缺失"
-    assert set(callers) == {"engine/auth_injection.py", "engine/login_render.py"}
+    assert set(callers) == {
+        "engine/auth_injection.py",
+        "engine/login_render.py",
+        "engine/login_cache.py",
+    }
 
 
 # ------------------------------------------------------------- 材料与身份表
@@ -138,17 +142,30 @@ def test_requests_without_auth_match_v020_shape() -> None:
     """auth=None 时 to_dict 与 v0.2.0 逐键一致（不新增 auth 键）。"""
     api = ApiExecutionRequest(api_id="a", assets_root=Path("/a"), environment={}, params={})
     case = CaseExecutionRequest(case_id="c", assets_root=Path("/a"), environment={}, params={})
-    assert set(api.to_dict()) == {"api_id", "assets_root", "environment", "params",
-                                  "timeout_seconds"}
-    assert set(case.to_dict()) == {"case_id", "assets_root", "environment", "params",
-                                   "timeout_seconds"}
+    assert set(api.to_dict()) == {
+        "api_id",
+        "assets_root",
+        "environment",
+        "params",
+        "timeout_seconds",
+    }
+    assert set(case.to_dict()) == {
+        "case_id",
+        "assets_root",
+        "environment",
+        "params",
+        "timeout_seconds",
+    }
     assert api.auth is None and case.auth is None
 
 
 def test_request_auth_must_be_auth_table() -> None:
     with pytest.raises(TypeError):
         ApiExecutionRequest(
-            api_id="a", assets_root=Path("/a"), environment={}, params={},
+            api_id="a",
+            assets_root=Path("/a"),
+            environment={},
+            params={},
             auth={"admin": ADMIN_SECRET},  # type: ignore[arg-type]
         )
 
@@ -179,29 +196,60 @@ def test_unavailable_auth_requires_reason() -> None:
 _BAD_CONSTRUCTIONS: list[tuple[str, Callable[[], object]]] = [
     ("secretstr-non-str", lambda: SecretStr(ADMIN_SECRET.encode())),  # type: ignore[arg-type]
     ("header-raw-str", lambda: StaticHeaderAuth(headers={"Authorization": ADMIN_SECRET})),
-    ("header-name-is-secret", lambda: StaticHeaderAuth(
-        headers={f"bad name {ADMIN_SECRET}": SecretStr(ADMIN_SECRET)})),
-    ("header-dup-case", lambda: StaticHeaderAuth(headers={
-        "Authorization": SecretStr(ADMIN_SECRET), "authorization": SecretStr(PARTNER_SECRET)})),
+    (
+        "header-name-is-secret",
+        lambda: StaticHeaderAuth(headers={f"bad name {ADMIN_SECRET}": SecretStr(ADMIN_SECRET)}),
+    ),
+    (
+        "header-dup-case",
+        lambda: StaticHeaderAuth(
+            headers={
+                "Authorization": SecretStr(ADMIN_SECRET),
+                "authorization": SecretStr(PARTNER_SECRET),
+            }
+        ),
+    ),
     ("header-short", lambda: StaticHeaderAuth(headers={"X-Key": SecretStr("tp-fake")})),
-    ("raw-short", lambda: StaticHeaderAuth(
-        headers={"Authorization": SecretStr(ADMIN_HEADER_VALUE)},
-        secret_values=(SecretStr("tp-fak7"),))),
-    ("raw-not-secretstr", lambda: StaticHeaderAuth(
-        headers={"Authorization": SecretStr(ADMIN_HEADER_VALUE)},
-        secret_values=(ADMIN_SECRET,))),  # type: ignore[arg-type]
-    ("raw-is-str", lambda: StaticHeaderAuth(
-        headers={"Authorization": SecretStr(ADMIN_HEADER_VALUE)},
-        secret_values=ADMIN_SECRET)),  # type: ignore[arg-type]
+    (
+        "raw-short",
+        lambda: StaticHeaderAuth(
+            headers={"Authorization": SecretStr(ADMIN_HEADER_VALUE)},
+            secret_values=(SecretStr("tp-fak7"),),
+        ),
+    ),
+    (
+        "raw-not-secretstr",
+        lambda: StaticHeaderAuth(
+            headers={"Authorization": SecretStr(ADMIN_HEADER_VALUE)}, secret_values=(ADMIN_SECRET,)
+        ),
+    ),  # type: ignore[arg-type]
+    (
+        "raw-is-str",
+        lambda: StaticHeaderAuth(
+            headers={"Authorization": SecretStr(ADMIN_HEADER_VALUE)}, secret_values=ADMIN_SECRET
+        ),
+    ),  # type: ignore[arg-type]
     ("headers-not-mapping", lambda: StaticHeaderAuth(headers=[ADMIN_SECRET])),  # type: ignore
     ("table-bad-material", lambda: AuthTable(identities={"admin": ADMIN_SECRET})),
     ("table-non-str-name", lambda: AuthTable(identities={1: admin_material()})),  # type: ignore
-    ("request-raw-auth", lambda: ApiExecutionRequest(
-        api_id="a", assets_root=Path("/a"), environment={}, params={},
-        auth=ADMIN_SECRET)),  # type: ignore[arg-type]
-    ("outcome-auth-extra-key", lambda: ApiExecutionOutcome(
-        status="success", auth={"identity": "admin", "header_names": [],
-                                "overridden_headers": [], "secret": ADMIN_SECRET})),
+    (
+        "request-raw-auth",
+        lambda: ApiExecutionRequest(
+            api_id="a", assets_root=Path("/a"), environment={}, params={}, auth=ADMIN_SECRET
+        ),
+    ),  # type: ignore[arg-type]
+    (
+        "outcome-auth-extra-key",
+        lambda: ApiExecutionOutcome(
+            status="success",
+            auth={
+                "identity": "admin",
+                "header_names": [],
+                "overridden_headers": [],
+                "secret": ADMIN_SECRET,
+            },
+        ),
+    ),
 ]
 
 
@@ -220,11 +268,17 @@ def test_construction_errors_never_contain_secret(build: Callable[[], object]) -
 
 
 def test_outcome_auth_field_shape() -> None:
-    # 0.4：公开 auth 扩展为七键；静态 header 身份 tier/login_ref 为 null、cookie_names 为空。
+    # 0.5：公开 auth 九键；静态 header 身份 session_source=null、reauthenticated=false。
     info = {
-        "identity": "admin", "kind": "static_headers", "tier": None,
-        "header_names": ["Authorization"], "overridden_headers": [],
-        "cookie_names": [], "login_ref": None,
+        "identity": "admin",
+        "kind": "static_headers",
+        "tier": None,
+        "header_names": ["Authorization"],
+        "overridden_headers": [],
+        "cookie_names": [],
+        "login_ref": None,
+        "session_source": None,
+        "reauthenticated": False,
     }
     outcome = ApiExecutionOutcome(status="success", auth=info)
     assert outcome.to_dict()["auth"] == info
@@ -236,11 +290,20 @@ def test_outcome_auth_field_shape() -> None:
 def test_skipped_step_cannot_carry_auth() -> None:
     with pytest.raises(ValueError):
         StepOutcome(
-            step_id="s", type="api", status="skipped", duration_seconds=0,
+            step_id="s",
+            type="api",
+            status="skipped",
+            duration_seconds=0,
             skip_reason="fail_fast",
             auth={
-                "identity": "admin", "kind": "static_headers", "tier": None,
-                "header_names": [], "overridden_headers": [], "cookie_names": [],
+                "identity": "admin",
+                "kind": "static_headers",
+                "tier": None,
+                "header_names": [],
+                "overridden_headers": [],
+                "cookie_names": [],
                 "login_ref": None,
+                "session_source": None,
+                "reauthenticated": False,
             },
         )

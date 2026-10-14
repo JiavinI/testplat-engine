@@ -15,8 +15,8 @@ def test_api_id_to_path_logic():
 
     def api_id_to_path(assets_root: Path, api_id: str) -> Path:
         """API ID 到路径转换 (与 registry.py 中的逻辑相同)"""
-        parts = api_id.split('.')
-        relative_path = Path(*parts).with_suffix('.yaml')
+        parts = api_id.split(".")
+        relative_path = Path(*parts).with_suffix(".yaml")
         return assets_root / relative_path
 
     assets_root = Path("/assets")
@@ -43,16 +43,16 @@ def test_yaml_to_api_logic():
     def yaml_to_api(data: dict) -> Api:
         """YAML 到 Api 转换 (与 yaml_loader.py 中的逻辑相同)"""
         try:
-            api_id = data['id']
-            name = data['name']
-            method = data['method']
-            url = data['url']
-            host = data['host']
+            api_id = data["id"]
+            name = data["name"]
+            method = data["method"]
+            url = data["url"]
+            host = data["host"]
         except KeyError as e:
             raise ValueError(f"缺少必需字段: {e}") from e
 
-        request = data.get('request', {})
-        success = data.get('success', {})
+        request = data.get("request", {})
+        success = data.get("success", {})
 
         if not isinstance(request, dict):
             raise ValueError(f"request 必须是字典类型,实际为: {type(request).__name__}")
@@ -71,34 +71,31 @@ def test_yaml_to_api_logic():
 
     # 测试 1: 完整数据
     data = {
-        'id': 'api.test.example',
-        'name': '测试 API',
-        'method': 'POST',
-        'url': '/api/test',
-        'host': 'test_server',
-        'request': {
-            'headers': {'Content-Type': 'application/json'},
-            'body': {'key': 'value'}
-        },
-        'success': {'status_code': 201}
+        "id": "api.test.example",
+        "name": "测试 API",
+        "method": "POST",
+        "url": "/api/test",
+        "host": "test_server",
+        "request": {"headers": {"Content-Type": "application/json"}, "body": {"key": "value"}},
+        "success": {"status_code": 201},
     }
 
     api = yaml_to_api(data)
     assert isinstance(api, Api)
-    assert api.id == 'api.test.example'
-    assert api.name == '测试 API'
-    assert api.method == 'POST'
-    assert api.url == '/api/test'
-    assert api.host == 'test_server'
+    assert api.id == "api.test.example"
+    assert api.name == "测试 API"
+    assert api.method == "POST"
+    assert api.url == "/api/test"
+    assert api.host == "test_server"
     print("  ✓ 完整数据转换成功")
 
     # 测试 2: 使用默认值
     minimal_data = {
-        'id': 'api.test.minimal',
-        'name': '最小 API',
-        'method': 'GET',
-        'url': '/minimal',
-        'host': 'server'
+        "id": "api.test.minimal",
+        "name": "最小 API",
+        "method": "GET",
+        "url": "/minimal",
+        "host": "server",
     }
 
     api = yaml_to_api(minimal_data)
@@ -108,7 +105,7 @@ def test_yaml_to_api_logic():
 
     # 测试 3: 缺少必需字段
     try:
-        invalid_data = {'id': 'test', 'name': 'test'}
+        invalid_data = {"id": "test", "name": "test"}
         yaml_to_api(invalid_data)
         assert False, "应该抛出 ValueError"
     except ValueError as e:
@@ -118,12 +115,12 @@ def test_yaml_to_api_logic():
     # 测试 4: request 类型错误
     try:
         invalid_data = {
-            'id': 'test',
-            'name': 'test',
-            'method': 'GET',
-            'url': '/test',
-            'host': 'server',
-            'request': 'invalid'
+            "id": "test",
+            "name": "test",
+            "method": "GET",
+            "url": "/test",
+            "host": "server",
+            "request": "invalid",
         }
         yaml_to_api(invalid_data)
         assert False, "应该抛出 ValueError"
@@ -134,12 +131,12 @@ def test_yaml_to_api_logic():
     # 测试 5: success 类型错误
     try:
         invalid_data = {
-            'id': 'test',
-            'name': 'test',
-            'method': 'GET',
-            'url': '/test',
-            'host': 'server',
-            'success': ['invalid']
+            "id": "test",
+            "name": "test",
+            "method": "GET",
+            "url": "/test",
+            "host": "server",
+            "success": ["invalid"],
         }
         yaml_to_api(invalid_data)
         assert False, "应该抛出 ValueError"
@@ -156,37 +153,37 @@ def test_api_model_validation():
 
     # 测试 1: 有效数据
     api = Api(
-        id='api.test.valid',
-        name='有效 API',
-        method='get',
-        url='/test',
-        host='server',
+        id="api.test.valid",
+        name="有效 API",
+        method="get",
+        url="/test",
+        host="server",
         request={},
-        success={}
+        success={},
     )
-    assert api.method == 'GET'  # 小写规范化为大写
+    assert api.method == "GET"  # 小写规范化为大写
     print(f"  ✓ 有效数据创建成功 (method: get -> {api.method})")
 
     # 测试 2: full_url 属性
-    assert api.full_url == 'GET /test'
+    assert api.full_url == "GET /test"
     print(f"  ✓ full_url 属性: {api.full_url}")
 
     # 测试 3: to_dict 方法
     api_dict = api.to_dict()
-    assert api_dict['id'] == 'api.test.valid'
-    assert api_dict['method'] == 'GET'
+    assert api_dict["id"] == "api.test.valid"
+    assert api_dict["method"] == "GET"
     print("  ✓ to_dict 方法正常")
 
     # 测试 4: 无效 HTTP 方法
     try:
         Api(
-            id='test',
-            name='test',
-            method='INVALID',
-            url='/test',
-            host='server',
+            id="test",
+            name="test",
+            method="INVALID",
+            url="/test",
+            host="server",
             request={},
-            success={}
+            success={},
         )
         assert False, "应该抛出 ValueError"
     except ValueError as e:
@@ -195,15 +192,7 @@ def test_api_model_validation():
 
     # 测试 5: 空 id
     try:
-        Api(
-            id='',
-            name='test',
-            method='GET',
-            url='/test',
-            host='server',
-            request={},
-            success={}
-        )
+        Api(id="", name="test", method="GET", url="/test", host="server", request={}, success={})
         assert False, "应该抛出 ValueError"
     except ValueError as e:
         assert "id 不能为空" in str(e)
@@ -211,15 +200,7 @@ def test_api_model_validation():
 
     # 测试 6: 空 name
     try:
-        Api(
-            id='test',
-            name='',
-            method='GET',
-            url='/test',
-            host='server',
-            request={},
-            success={}
-        )
+        Api(id="test", name="", method="GET", url="/test", host="server", request={}, success={})
         assert False, "应该抛出 ValueError"
     except ValueError as e:
         assert "name 不能为空" in str(e)
@@ -227,15 +208,7 @@ def test_api_model_validation():
 
     # 测试 7: 空 url
     try:
-        Api(
-            id='test',
-            name='test',
-            method='GET',
-            url='',
-            host='server',
-            request={},
-            success={}
-        )
+        Api(id="test", name="test", method="GET", url="", host="server", request={}, success={})
         assert False, "应该抛出 ValueError"
     except ValueError as e:
         assert "url 不能为空" in str(e)
@@ -243,31 +216,23 @@ def test_api_model_validation():
 
     # 测试 8: 空 host
     try:
-        Api(
-            id='test',
-            name='test',
-            method='GET',
-            url='/test',
-            host='',
-            request={},
-            success={}
-        )
+        Api(id="test", name="test", method="GET", url="/test", host="", request={}, success={})
         assert False, "应该抛出 ValueError"
     except ValueError as e:
         assert "host 不能为空" in str(e)
         print("  ✓ 空 host 检测")
 
     # 测试 9: 所有支持的 HTTP 方法
-    valid_methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']
+    valid_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
     for method in valid_methods:
         api = Api(
-            id='test',
-            name='test',
+            id="test",
+            name="test",
             method=method.lower(),
-            url='/test',
-            host='server',
+            url="/test",
+            host="server",
             request={},
-            success={}
+            success={},
         )
         assert api.method == method
     print(f"  ✓ 所有支持的 HTTP 方法: {', '.join(valid_methods)}")
@@ -304,9 +269,10 @@ def main():
     except Exception as e:
         print(f"\n✗ 测试失败: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

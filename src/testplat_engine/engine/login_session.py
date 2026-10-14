@@ -5,7 +5,9 @@
 
 - D8：业务步骤解析出 login 身份后调 ``ensure``；池中有效 → 直接复用；否则登录。
 - D13/E3：``ttl_seconds`` / ``expires_from`` / Cookie ``expires`` 任一到期（固定提前 30 秒）→ 重登，
-  ``logins`` 追加新记录，``login_ref`` 指向新下标。不做跨执行缓存。
+  ``logins`` 追加新记录，``login_ref`` 指向新下标。
+- 3.3d：可选跨执行 ``LoginCache``（进程内存）；命中路径必须先把静态秘密与缓存命名值
+  加入执行级替换集合，再构造任何快照（§2.5 / H1）。
 - H1：按值替换集合挂在池上，是全部身份的命名值、jar Cookie 值、登录参数秘密、静态 header
   秘密的**并集**；任何快照都用它脱敏。
 - Q7：登录过程记录先缓存；登录结束（成功或失败）后**先**把命名值与 jar Cookie 值加入集合，
@@ -25,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from testplat_engine.engine.assert_engine import _extract_value
+from testplat_engine.engine.login_cache import CacheKey, LoginCache
 from testplat_engine.engine.login_flow import (
     GenericFlowStrategy,
     LoginStepError,
@@ -92,18 +95,29 @@ class LoginFailedError(Exception):
 
 @dataclass(slots=True, repr=False)
 class SessionEntry:
-    """池中一个身份的鉴权状态；只在本次执行内存活。"""
+    """池中一个身份的鉴权状态；只在本次执行内存活。
+
+    ``session_source``：本步视角的会话来源（login / execution / cache）。
+    ``cache_key`` / ``cache_generation``：仅供 401 作废时按 generation 删缓存条目；
+    二者均为秘密相关，不进 repr。
+    """
 
     identity: str
     client: HttpClient
     owns_client: bool
     values: dict[str, str]
     expires_at: float | None
-    login_ref: int
+    login_ref: int | None
     session_cookie: bool
+    session_source: str = "login"
+    cache_key: CacheKey | None = None
+    cache_generation: int | None = None
 
     def __repr__(self) -> str:
-        return f"SessionEntry(identity={self.identity!r}, login_ref={self.login_ref})"
+        return (
+            f"SessionEntry(identity={self.identity!r}, login_ref={self.login_ref}, "
+            f"session_source={self.session_source!r})"
+        )
 
 
 def validate_strategies(strategies: Iterable[object]) -> dict[str, LoginStrategy]:
@@ -194,15 +208,17 @@ def _expires_from_response(
 
 
 class SessionPool:
-    """一次执行的会话池；不可跨执行复用（D13）。"""
+    """一次执行的会话池。跨执行复用只通过共享的 ``LoginCache``（命名值），不复用本池。"""
 
     def __init__(
         self,
         strategies: Mapping[str, LoginStrategy],
         client_factory: Callable[[], tuple[HttpClient, bool]],
+        cache: LoginCache | None = None,
     ) -> None:
         self._strategies = strategies
         self._client_factory = client_factory
+        self._cache = cache
         self._entries: dict[str, SessionEntry] = {}
         self._secrets: set[str] = set()
         self._logins: list[JsonObject] = []
@@ -258,16 +274,89 @@ class SessionPool:
         *,
         timeout_seconds: float,
         connections: Mapping[str, Mapping[str, object]],
+        cache_scope: str | None = None,
     ) -> SessionEntry:
-        """返回可用的会话；需要时登录。登录失败抛 ``LoginFailedError``（业务结果）。"""
+        """返回可用的会话（设计稿 §2.5 三段顺序）。登录失败抛 ``LoginFailedError``。"""
         entry = self._entries.get(identity)
         if entry is not None and self._is_valid(entry):
+            # 本步复用本次执行前面步骤已拿到的会话。
+            entry.session_source = "execution"
             return entry
         if entry is not None:
-            # 失效：丢弃旧会话（含 jar），用全新 client 重新登录。
             del self._entries[identity]
             await self._close_client(entry.client, entry.owns_client, identity)
-        return await self._login(identity, material, host_url, timeout_seconds, connections)
+
+        cache = self._cache
+        use_cache = (
+            cache is not None
+            and cache.enabled
+            and isinstance(cache_scope, str)
+            and cache_scope
+            and not material.session_cookie  # R5：cookie 身份不跨执行缓存
+        )
+        if not use_cache:
+            return await self._login(identity, material, host_url, timeout_seconds, connections)
+
+        assert cache is not None
+        fingerprint = cache.fingerprint(material, host_url, connections)
+        key = cache.make_key(cache_scope, identity, fingerprint)
+        async with cache.lock_for(key):
+            # 锁内再查池（同执行并发极少，但保持正确性）。
+            entry = self._entries.get(identity)
+            if entry is not None and self._is_valid(entry):
+                entry.session_source = "execution"
+                return entry
+
+            cached = cache.get(key)
+            now = _now()
+            if cached is not None:
+                if now >= cached.expires_at - SAFETY_MARGIN_SECONDS:
+                    cache.delete(key)
+                    logger.info("cache=miss identity=%s", identity)
+                    cached = None
+                else:
+                    # §2.5 命中路径最危险点：先入替换集合，再核 inject，再建任何快照。
+                    self.add_secrets(static_login_secrets(material, connections))
+                    self.add_secrets(cached.values.values())
+                    if self._check_values(material, cached.values, host_url) is not None:
+                        cache.delete(key)
+                        logger.info("cache=invalidate identity=%s", identity)
+                        cached = None
+                    else:
+                        client, owns = self._client_factory()
+                        entry = SessionEntry(
+                            identity=identity,
+                            client=client,
+                            owns_client=owns,
+                            values=dict(cached.values),
+                            expires_at=cached.expires_at,
+                            login_ref=None,
+                            session_cookie=material.session_cookie,
+                            session_source="cache",
+                            cache_key=key,
+                            cache_generation=cached.generation,
+                        )
+                        self._entries[identity] = entry
+                        logger.info("cache=hit identity=%s", identity)
+                        return entry
+
+            logger.info("cache=miss identity=%s", identity)
+            try:
+                entry = await self._login(
+                    identity, material, host_url, timeout_seconds, connections
+                )
+            except LoginFailedError:
+                # 登录失败 → 删除该键旧条目（可能已过期但仍占位）。
+                cache.delete(key)
+                logger.info("cache=invalidate identity=%s", identity)
+                raise
+            # §2.4 写入条件：成功、有 expires_at、距失效 > 30 秒、非 cookie 身份。
+            if entry.expires_at is not None and entry.expires_at - _now() > SAFETY_MARGIN_SECONDS:
+                generation = cache.store(key, entry.values, entry.expires_at)
+                entry.cache_key = key
+                entry.cache_generation = generation
+                logger.info("cache=store identity=%s", identity)
+            return entry
 
     async def _login(
         self,
@@ -386,6 +475,7 @@ class SessionPool:
             expires_at=expires_at,
             login_ref=login_ref,
             session_cookie=material.session_cookie,
+            session_source="login",
         )
         self._entries[identity] = entry
         return entry
@@ -473,6 +563,22 @@ class SessionPool:
             "probe": probe,  # type: ignore[dict-item]
             "error": error,
         }
+
+    # ------------------------------------------------------------ 作废（401 重登）
+
+    async def invalidate_identity(self, identity: str) -> None:
+        """从本次执行池删除该身份；若条目来自/已写入缓存，按 generation 作废缓存条目。"""
+        entry = self._entries.pop(identity, None)
+        if entry is None:
+            return
+        if (
+            self._cache is not None
+            and entry.cache_key is not None
+            and entry.cache_generation is not None
+        ):
+            if self._cache.invalidate(entry.cache_key, entry.cache_generation):
+                logger.info("cache=invalidate identity=%s", identity)
+        await self._close_client(entry.client, entry.owns_client, identity)
 
     # ------------------------------------------------------------ 生命周期
 

@@ -30,17 +30,17 @@ success:
   status_code: 200
 """
         yaml_file = tmp_path / "test.yaml"
-        yaml_file.write_text(yaml_content, encoding='utf-8')
+        yaml_file.write_text(yaml_content, encoding="utf-8")
 
         data = load_yaml(yaml_file)
 
-        assert data['id'] == 'api.test.example'
-        assert data['name'] == '测试 API'
-        assert data['method'] == 'GET'
-        assert data['url'] == '/test'
-        assert data['host'] == 'test_server'
-        assert data['request']['headers']['Content-Type'] == 'application/json'
-        assert data['success']['status_code'] == 200
+        assert data["id"] == "api.test.example"
+        assert data["name"] == "测试 API"
+        assert data["method"] == "GET"
+        assert data["url"] == "/test"
+        assert data["host"] == "test_server"
+        assert data["request"]["headers"]["Content-Type"] == "application/json"
+        assert data["success"]["status_code"] == 200
 
     def test_load_nonexistent_file(self, tmp_path: Path):
         """测试加载不存在的文件"""
@@ -52,7 +52,7 @@ success:
     def test_load_empty_yaml(self, tmp_path: Path):
         """测试加载空 YAML 文件"""
         yaml_file = tmp_path / "empty.yaml"
-        yaml_file.write_text("", encoding='utf-8')
+        yaml_file.write_text("", encoding="utf-8")
 
         with pytest.raises(ValueError, match="YAML 文件为空"):
             load_yaml(yaml_file)
@@ -65,7 +65,7 @@ id: test
 name: test
 """
         yaml_file = tmp_path / "invalid.yaml"
-        yaml_file.write_text(yaml_content, encoding='utf-8')
+        yaml_file.write_text(yaml_content, encoding="utf-8")
 
         with pytest.raises(ValueError, match="YAML 格式错误"):
             load_yaml(yaml_file)
@@ -77,7 +77,7 @@ name: test
 - item2
 """
         yaml_file = tmp_path / "list.yaml"
-        yaml_file.write_text(yaml_content, encoding='utf-8')
+        yaml_file.write_text(yaml_content, encoding="utf-8")
 
         with pytest.raises(ValueError, match="YAML 根节点必须是字典"):
             load_yaml(yaml_file)
@@ -89,37 +89,34 @@ class TestYamlToApi:
     def test_convert_valid_data(self):
         """测试转换有效的 YAML 数据"""
         data = {
-            'id': 'api.test.example',
-            'name': '测试 API',
-            'method': 'POST',
-            'url': '/api/test',
-            'host': 'test_server',
-            'request': {
-                'headers': {'Content-Type': 'application/json'},
-                'body': {'key': 'value'}
-            },
-            'success': {'status_code': 201}
+            "id": "api.test.example",
+            "name": "测试 API",
+            "method": "POST",
+            "url": "/api/test",
+            "host": "test_server",
+            "request": {"headers": {"Content-Type": "application/json"}, "body": {"key": "value"}},
+            "success": {"status_code": 201},
         }
 
         api = yaml_to_api(data)
 
         assert isinstance(api, Api)
-        assert api.id == 'api.test.example'
-        assert api.name == '测试 API'
-        assert api.method == 'POST'
-        assert api.url == '/api/test'
-        assert api.host == 'test_server'
-        assert api.request == data['request']
-        assert api.success == data['success']
+        assert api.id == "api.test.example"
+        assert api.name == "测试 API"
+        assert api.method == "POST"
+        assert api.url == "/api/test"
+        assert api.host == "test_server"
+        assert api.request == data["request"]
+        assert api.success == data["success"]
 
     def test_convert_with_default_values(self):
         """测试转换使用默认值的数据"""
         data = {
-            'id': 'api.test.minimal',
-            'name': '最小 API',
-            'method': 'GET',
-            'url': '/minimal',
-            'host': 'server'
+            "id": "api.test.minimal",
+            "name": "最小 API",
+            "method": "GET",
+            "url": "/minimal",
+            "host": "server",
         }
 
         api = yaml_to_api(data)
@@ -130,9 +127,9 @@ class TestYamlToApi:
     def test_convert_missing_required_field(self):
         """测试转换缺少必需字段的数据"""
         data = {
-            'id': 'api.test.incomplete',
-            'name': '不完整 API',
-            'method': 'GET'
+            "id": "api.test.incomplete",
+            "name": "不完整 API",
+            "method": "GET",
             # 缺少 url 和 host
         }
 
@@ -142,12 +139,12 @@ class TestYamlToApi:
     def test_convert_invalid_request_type(self):
         """测试转换 request 字段类型错误"""
         data = {
-            'id': 'api.test.invalid',
-            'name': '无效 API',
-            'method': 'GET',
-            'url': '/test',
-            'host': 'server',
-            'request': 'invalid'  # 应该是字典
+            "id": "api.test.invalid",
+            "name": "无效 API",
+            "method": "GET",
+            "url": "/test",
+            "host": "server",
+            "request": "invalid",  # 应该是字典
         }
 
         with pytest.raises(ValueError, match="request 必须是字典类型"):
@@ -156,12 +153,12 @@ class TestYamlToApi:
     def test_convert_invalid_success_type(self):
         """测试转换 success 字段类型错误"""
         data = {
-            'id': 'api.test.invalid',
-            'name': '无效 API',
-            'method': 'GET',
-            'url': '/test',
-            'host': 'server',
-            'success': ['invalid']  # 应该是字典
+            "id": "api.test.invalid",
+            "name": "无效 API",
+            "method": "GET",
+            "url": "/test",
+            "host": "server",
+            "success": ["invalid"],  # 应该是字典
         }
 
         with pytest.raises(ValueError, match="success 必须是字典类型"):
@@ -192,7 +189,7 @@ request: {}
 success:
   status_code: 200
 """
-        (api_common / "health_check.yaml").write_text(health_check_yaml, encoding='utf-8')
+        (api_common / "health_check.yaml").write_text(health_check_yaml, encoding="utf-8")
 
         # 创建嵌套的 API 文件
         user_api = assets / "api" / "user" / "profile"
@@ -211,7 +208,7 @@ success:
   contains:
     - user_id
 """
-        (user_api / "get.yaml").write_text(profile_yaml, encoding='utf-8')
+        (user_api / "get.yaml").write_text(profile_yaml, encoding="utf-8")
 
         return assets
 
@@ -240,9 +237,9 @@ success:
         assert api.method == "GET"
         assert api.url == "/user/profile"
         assert api.host == "user_service"
-        assert "Authorization" in api.request['headers']
-        assert api.success['status_code'] == 200
-        assert "user_id" in api.success['contains']
+        assert "Authorization" in api.request["headers"]
+        assert api.success["status_code"] == 200
+        assert "user_id" in api.success["contains"]
 
     def test_load_nonexistent_api(self, assets_root: Path):
         """测试加载不存在的 API"""
@@ -263,7 +260,7 @@ host: server
 """
         api_dir = assets_root / "api" / "test"
         api_dir.mkdir(parents=True)
-        (api_dir / "file.yaml").write_text(mismatched_yaml, encoding='utf-8')
+        (api_dir / "file.yaml").write_text(mismatched_yaml, encoding="utf-8")
 
         registry = Registry(assets_root)
 

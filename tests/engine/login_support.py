@@ -78,12 +78,21 @@ class FakeTarget:
     requests: list[httpx.Request] = field(default_factory=list)
     issued: list[str] = field(default_factory=list)
     sessions: set[str] = field(default_factory=set)
+    revoked: set[str] = field(default_factory=set)
     expires_in: int = 3600
     session_max_age: int | None = None
     counter: int = 0
+    # 3.3d：业务端点 — 吊销 token 后回 401；always_401 强制每次 401。
+    always_401: bool = False
+    revoke_after_business: bool = False
+    first_401_body_secret: str = "revoked-body-secret-9f9f"
 
     def secrets(self) -> tuple[str, ...]:
         return (*STATIC_SECRETS, *self.issued)
+
+    def revoke_all(self) -> None:
+        """吊销所有已签发 token（设计稿 §6-38）。"""
+        self.revoked.update(self.issued)
 
     def _token(self, user: str) -> str:
         self.counter += 1
@@ -163,20 +172,53 @@ class FakeTarget:
             if any(f"SESSION={s}" in cookie for s in self.sessions):
                 return httpx.Response(200, text="<html>ok</html>", headers={"x-uid": "777"})
             return httpx.Response(200, text='<form id="loginFrom"></form>')
-        if path == "/echo/token":
+        if path in ("/echo/token", "/echo/token-post"):
+            token = _lookup(request.headers, "X-TOKEN") or ""
+            if self.always_401 or token in self.revoked:
+                return httpx.Response(
+                    401,
+                    json={"msg": "unauthorized", "detail": self.first_401_body_secret},
+                )
+            posted = None
+            if path == "/echo/token-post":
+                try:
+                    posted = json.loads(body or "null")
+                except json.JSONDecodeError:
+                    posted = body
+            payload: dict[str, Any] = {
+                "echo": {
+                    "x_token": token or None,
+                    "cookie": _lookup(request.headers, "Cookie"),
+                    "csrf": _lookup(request.headers, "X-CSRF-Token"),
+                    "authz": _lookup(request.headers, "Authorization"),
+                }
+            }
+            if path == "/echo/token-post":
+                payload["posted"] = posted
+            if self.revoke_after_business and token:
+                self.revoked.add(token)
+            return httpx.Response(200, json=payload)
+        if path == "/echo/secrets":
+            # §6-32 专用：回显 token 与登录密码，验证缓存命中路径的按值替换。
+            token = _lookup(request.headers, "X-TOKEN") or ""
+            if self.always_401 or token in self.revoked:
+                return httpx.Response(
+                    401,
+                    json={"msg": "unauthorized", "detail": self.first_401_body_secret},
+                )
             return httpx.Response(
                 200,
                 json={
                     "echo": {
-                        "x_token": _lookup(request.headers, "X-TOKEN"),
-                        "cookie": _lookup(request.headers, "Cookie"),
-                        "csrf": _lookup(request.headers, "X-CSRF-Token"),
-                        "authz": _lookup(request.headers, "Authorization"),
+                        "x_token": token or None,
+                        "password_echo": BUYER_PASSWORD,
                     }
                 },
             )
         if path == "/protected/401":
-            return httpx.Response(401, json={"msg": "unauthorized"})
+            return httpx.Response(
+                401, json={"msg": "unauthorized", "detail": self.first_401_body_secret}
+            )
         if path == "/echo/raw":
             return httpx.Response(
                 200,
@@ -200,8 +242,17 @@ class FakeTarget:
         return [r.url.path for r in self.requests]
 
 
-def engine_for(target: FakeTarget, strategies: tuple[Any, ...] = ()) -> SingleApiEngine:
-    return SingleApiEngine(login_strategies=strategies, client_factory=target.factory)
+def engine_for(
+    target: FakeTarget,
+    strategies: tuple[Any, ...] = (),
+    *,
+    login_cache_max_entries: int = 256,
+) -> SingleApiEngine:
+    return SingleApiEngine(
+        login_strategies=strategies,
+        client_factory=target.factory,
+        login_cache_max_entries=login_cache_max_entries,
+    )
 
 
 # ------------------------------------------------------------------ 身份材料
@@ -295,6 +346,8 @@ def admin_static() -> StaticHeaderAuth:
 
 
 def table(**identities: Any) -> AuthTable:
+    """构造测试身份表；可用 ``cache_scope=...`` 关键字开启跨执行缓存作用域。"""
+    cache_scope = identities.pop("cache_scope", None)
     base: dict[str, Any] = {
         "buyer": buyer_material(),
         "seller": seller_material(),
@@ -308,6 +361,7 @@ def table(**identities: Any) -> AuthTable:
         connections={
             "redis_main": {"host": "10.0.0.5", "port": 6379, "password": SecretStr(REDIS_PASSWORD)}
         },
+        cache_scope=cache_scope,
     )
 
 

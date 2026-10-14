@@ -243,9 +243,7 @@ async def test_g5_unsupported_step_type_preflight_no_http(assets_root: Path, ser
 async def test_m8_missing_params_is_invalid_input_no_http(assets_root: Path, server) -> None:
     state, base = server
     with pytest.raises(InvalidInputError) as ei:
-        await SingleApiEngine().execute(
-            _request(assets_root, base, "case.demo.m8_missing_params")
-        )
+        await SingleApiEngine().execute(_request(assets_root, base, "case.demo.m8_missing_params"))
     assert (ei.value.kind, ei.value.stage) == ("invalid_input", "preflight")
     assert state.paths() == []
 
@@ -442,9 +440,7 @@ def _write_case(assets_root: Path, name: str, steps_yaml: str) -> str:
         "created.headers.Set-Cookie",
     ],
 )
-async def test_redacted_values_never_flow_downstream(
-    assets_root: Path, server, ref: str
-) -> None:
+async def test_redacted_values_never_flow_downstream(assets_root: Path, server, ref: str) -> None:
     state, base = server
     case_id = _write_case(
         assets_root,
@@ -492,8 +488,8 @@ async def test_request_secrets_redacted_in_public_result(assets_root: Path, serv
     write_yaml(
         assets_root / "api" / "demo" / "auth_probe.yaml",
         "id: api.demo.auth_probe\nname: 鉴权探针\nhost: local\nmethod: GET\nurl: /status/200\n"
-        "request:\n  headers:\n    Authorization: \"${auth}\"\n    Cookie: \"sid=${sid}\"\n"
-        "  body:\n    password: \"${pw}\"\n    nested: {access_token: \"${auth}\", ok: 1}\n"
+        'request:\n  headers:\n    Authorization: "${auth}"\n    Cookie: "sid=${sid}"\n'
+        '  body:\n    password: "${pw}"\n    nested: {access_token: "${auth}", ok: 1}\n'
         "success:\n  status_code: 200\n",
     )
     case_id = _write_case(
@@ -546,9 +542,7 @@ async def test_state_isolated_between_executions(assets_root: Path, server) -> N
     state, base = server
     engine = SingleApiEngine()
     first = await engine.execute(_request(assets_root, base, "case.demo.g1_success"))
-    second = await engine.execute(
-        _request(assets_root, base, "case.demo.g4b_missing_runtime_path")
-    )
+    second = await engine.execute(_request(assets_root, base, "case.demo.g4b_missing_runtime_path"))
     assert first.status == "success"
     assert second.steps[1].error is not None
     assert second.steps[1].error["kind"] == "variable_resolution"

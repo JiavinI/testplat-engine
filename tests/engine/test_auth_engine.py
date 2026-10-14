@@ -69,9 +69,15 @@ async def test_admin_identity_injects_header_and_hides_secret() -> None:
     dumped = outcome.to_dict()
     assert dumped["status"] == "success"
     assert dumped["auth"] == {
-        "identity": "admin", "kind": "static_headers", "tier": None,
-        "header_names": ["Authorization"], "overridden_headers": [],
-        "cookie_names": [], "login_ref": None,
+        "identity": "admin",
+        "kind": "static_headers",
+        "tier": None,
+        "header_names": ["Authorization"],
+        "overridden_headers": [],
+        "cookie_names": [],
+        "login_ref": None,
+        "session_source": None,
+        "reauthenticated": False,
     }
     assert dumped["request"]["headers"] == {"Authorization": "***"}
     # §6-2：回显到非敏感键下 → 按值替换为 ***，键保留。
@@ -122,8 +128,14 @@ async def test_h1_value_redaction_without_name_rule(monkeypatch: pytest.MonkeyPa
 
 def test_h1_single_sensitive_list() -> None:
     assert not hasattr(executor_module, "_SENSITIVE_HEADER_NAMES")
-    for name in ("authorization", "proxy-authorization", "cookie", "set-cookie",
-                 "x-api-key", "api-key"):
+    for name in (
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+    ):
         assert name in _SENSITIVE_KEYS
     source = Path(executor_module.__file__).read_text(encoding="utf-8")
     assert "完整值只允许进入日志链路" not in source
@@ -317,8 +329,12 @@ async def test_single_api_alternating_identities_share_client_without_crosstalk(
     client = EchoClient()
     engine = SingleApiEngine(client)
     table = auth_table()
-    for api_id in ["api.auth.admin_get", "api.auth.partner_get", "api.auth.none_get",
-                   "api.auth.admin_get"]:
+    for api_id in [
+        "api.auth.admin_get",
+        "api.auth.partner_get",
+        "api.auth.none_get",
+        "api.auth.admin_get",
+    ]:
         await engine.execute(api_request(api_id, table))
     shapes = [sorted(k.lower() for k in r.headers) for r in client.sent]
     assert shapes == [["authorization"], ["x-tenant-token"], [], ["authorization"]]
@@ -329,8 +345,9 @@ async def test_single_api_alternating_identities_share_client_without_crosstalk(
 
 async def test_h2_case_steps_actually_send_identity_headers() -> None:
     client = EchoClient()
-    outcome = await SingleApiEngine(client).execute(case_request("case.auth.auth_mixed",
-                                                                 auth_table()))
+    outcome = await SingleApiEngine(client).execute(
+        case_request("case.auth.auth_mixed", auth_table())
+    )
     assert outcome.status == "success"
     sent = [r.headers for r in client.sent]
     assert len(sent) == 5
@@ -378,8 +395,9 @@ async def test_case_step_level_auth_is_invalid_asset() -> None:
 
 async def test_q4_alias_gets_redacted_value_with_key_kept() -> None:
     client = EchoClient()
-    outcome = await SingleApiEngine(client).execute(case_request("case.auth.auth_alias",
-                                                                 auth_table()))
+    outcome = await SingleApiEngine(client).execute(
+        case_request("case.auth.auth_alias", auth_table())
+    )
     assert outcome.status == "success"
     # 下游步骤实际发出的请求体里是替换后的 ***，而不是原值（键保留，引用不失败）。
     assert client.sent[1].body == {"value": "***"}

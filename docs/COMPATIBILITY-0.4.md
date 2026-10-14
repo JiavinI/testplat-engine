@@ -115,7 +115,8 @@ inject / probe / 步骤模板引用的 `${login:名字}` 无前序来源。Case 
 ```python
 class LoginStrategy(Protocol):
     name: str
-    def validate(self, auth: LoginAuth) -> None: ...          # 预检期，不得发请求
+
+    def validate(self, auth: LoginAuth) -> None: ...  # 预检期，不得发请求
     async def login(self, ctx: LoginContext) -> LoginResult: ...
 ```
 

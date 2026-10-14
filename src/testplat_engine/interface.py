@@ -122,7 +122,7 @@ def _finite_non_negative_seconds(value: float, field_name: str) -> float:
 # 边界：Control 负责读取 auth 配置与环境变量并构造下列 DTO；Engine 只在预检时
 # 按资产声明查表、在 client.request 调用处注入 header、并在公开面按名 + 按值脱敏。
 # 不变量：秘密值只能经 SecretStr.reveal() 取出，且全仓只有
-# engine/auth_injection.py 与（3.3b）engine/login_render.py 调用；
+# engine/auth_injection.py、engine/login_render.py 与（3.3d）engine/login_cache.py 调用；
 # 任何 repr/str/to_dict/异常消息都不含秘密值。
 # ---------------------------------------------------------------------------
 
@@ -324,6 +324,9 @@ _LOGIN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,63}$")
 # 模板中引用命名值的占位符：${login:名字}
 LOGIN_REF_RE = re.compile(r"\$\{login:([^}]*)\}")
 LOGIN_HOST_PLACEHOLDER = "${login_host}"
+# 3.3d：跨执行缓存作用域（非秘密，但不进公开结果 / to_dict）。
+_CACHE_SCOPE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
+
 
 Template: TypeAlias = "str | SecretStr"
 
@@ -706,6 +709,8 @@ class LoginAuth(_NoPickle):
     session_cookie: bool = False
     probe: ProbeSpec | None = None
     inject_headers: Mapping[str, Template] | None = None
+    # 3.3d：业务响应 401 时是否重登并重发一次（默认开启；指纹包含该布尔）。
+    reauth_on_401: bool = True
     kind: Literal["login"] = "login"
 
     def __post_init__(self) -> None:
@@ -743,6 +748,8 @@ class LoginAuth(_NoPickle):
             raise TypeError("LoginAuth.validity 必须是 Validity")
         if not isinstance(self.session_cookie, bool):
             raise TypeError("LoginAuth.session_cookie 必须是布尔值")
+        if not isinstance(self.reauth_on_401, bool):
+            raise TypeError("LoginAuth.reauth_on_401 必须是布尔值")
         if self.probe is not None and not isinstance(self.probe, ProbeSpec):
             raise TypeError("LoginAuth.probe 必须是 ProbeSpec")
         object.__setattr__(
@@ -770,7 +777,7 @@ class LoginAuth(_NoPickle):
         return tuple(self.inject_headers or {})
 
     def to_dict(self) -> JsonObject:
-        """只输出非秘密结构信息。"""
+        """只输出非秘密结构信息（含 reauth_on_401 布尔；不含任何凭证值）。"""
         return {
             "kind": self.kind,
             "strategy": self.strategy,
@@ -780,6 +787,7 @@ class LoginAuth(_NoPickle):
             "extract": [] if self.flow is None else sorted(self.flow.extracted_names()),
             "header_names": list(self.header_names),
             "session_cookie": self.session_cookie,
+            "reauth_on_401": self.reauth_on_401,
         }
 
     def __repr__(self) -> str:
@@ -822,7 +830,10 @@ class LoginRecorder(Protocol):
     """登录过程记录回调：Engine 先缓存原始请求/响应，``login()`` 结束后统一脱敏（Q7）。"""
 
     def __call__(
-        self, request: Mapping[str, object], response: Mapping[str, object] | None, *,
+        self,
+        request: Mapping[str, object],
+        response: Mapping[str, object] | None,
+        *,
         name: str | None = None,
     ) -> None: ...
 
@@ -912,15 +923,25 @@ class AuthTable:
     构造期只校验结构：身份名合法、``default_identity`` 必须存在（Q7）。
     材料须带字符串 ``kind``；未知 kind 允许构造（为跨版本前向兼容），
     但在被实际用到时由预检拒绝。
+    ``cache_scope``（3.3d）：跨执行缓存作用域；``None`` → 本表身份不跨执行缓存。
+    校验通过后仍不进 ``to_dict`` / 公开结果（C1）。
     """
 
     identities: Mapping[str, AuthMaterial]
     default_identity: str | None = None
     # 3.3b：插件可用的连接信息（非秘密字段原样，密码为 SecretStr）；只交给插件策略。
     connections: Mapping[str, Mapping[str, Template]] | None = None
+    # 3.3d：Control 传 f"{project.id}:{project.env}"；None / 缺省 → 不跨执行缓存。
+    cache_scope: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "connections", _copy_connections(self.connections))
+        if self.cache_scope is not None:
+            if not isinstance(self.cache_scope, str) or not _CACHE_SCOPE_RE.fullmatch(
+                self.cache_scope
+            ):
+                # 错误消息不回显原值（可能被误填为秘密）。
+                raise ValueError("AuthTable.cache_scope 必须是 ≤200 字符的 [A-Za-z0-9._:-] 或 None")
         if not isinstance(self.identities, Mapping):
             raise TypeError("AuthTable.identities 必须是映射")
         copied: dict[str, AuthMaterial] = {}
@@ -981,15 +1002,19 @@ _PUBLIC_AUTH_KEYS = (
     "overridden_headers",
     "cookie_names",
     "login_ref",
+    "session_source",
+    "reauthenticated",
 )
 _PUBLIC_AUTH_KINDS = frozenset({"static_headers", "login"})
+_SESSION_SOURCES = frozenset({"login", "execution", "cache"})
 
 
 def _public_auth(value: object) -> object:
-    """公开 auth 字段（0.4 七键）。
+    """公开 auth 字段（0.5 九键）。
 
-    ``{identity, kind, tier, header_names, overridden_headers, cookie_names, login_ref}``
-    或 None；静态 header 身份 ``tier=None``、``cookie_names=[]``、``login_ref=None``。
+    在 0.4 七键基础上新增 ``session_source`` / ``reauthenticated``。
+    静态 header 身份：``tier=None``、``cookie_names=[]``、``login_ref=None``、
+    ``session_source=None``、``reauthenticated=False``。
     """
     if value is None:
         return None
@@ -1020,8 +1045,19 @@ def _public_auth(value: object) -> object:
         isinstance(login_ref, bool) or not isinstance(login_ref, int) or login_ref < 0
     ):
         raise TypeError("auth.login_ref 必须是非负整数或 null")
-    if kind == "static_headers" and (login_ref is not None or names["cookie_names"]):
-        raise ValueError("静态 header 身份不能带 cookie_names / login_ref")
+    session_source = value["session_source"]
+    if session_source is not None and session_source not in _SESSION_SOURCES:
+        raise ValueError("auth.session_source 必须是 login/execution/cache 或 null")
+    reauthenticated = value["reauthenticated"]
+    if not isinstance(reauthenticated, bool):
+        raise TypeError("auth.reauthenticated 必须是布尔值")
+    if kind == "static_headers":
+        if login_ref is not None or names["cookie_names"]:
+            raise ValueError("静态 header 身份不能带 cookie_names / login_ref")
+        if session_source is not None or reauthenticated is not False:
+            raise ValueError(
+                "静态 header 身份的 session_source 必须为 null 且 reauthenticated 为 false"
+            )
     return _freeze_json(
         {
             "identity": identity,
@@ -1031,6 +1067,8 @@ def _public_auth(value: object) -> object:
             "overridden_headers": names["overridden_headers"],
             "cookie_names": names["cookie_names"],
             "login_ref": login_ref,
+            "session_source": session_source,
+            "reauthenticated": reauthenticated,
         }
     )
 
@@ -1107,7 +1145,7 @@ class ApiExecutionOutcome:
     request: JsonObject | None = None
     response: JsonValue | None = None
     error: JsonObject | None = None
-    # 公开身份信息（0.4 七键）或 None（匿名）。
+    # 公开身份信息（0.5 九键）或 None（匿名）。
     auth: JsonObject | None = None
     # 3.3b：本次执行发生的登录记录（按发生顺序，已脱敏）；步骤 auth.login_ref 为其下标。
     logins: Sequence[JsonObject] = ()
@@ -1207,7 +1245,7 @@ class StepOutcome:
     error: JsonObject | None = None
     output: str | None = None
     skip_reason: str | None = None
-    # 与单 API 结果同形的公开身份信息；skipped 步骤必须为 None。
+    # 与单 API 结果同形的公开身份信息（0.5 九键）；skipped 步骤必须为 None。
     auth: JsonObject | None = None
 
     def __post_init__(self) -> None:
@@ -1322,9 +1360,7 @@ class CaseExecutionOutcome:
 
         derived = _derive_case_status(steps)
         if self.status != derived:
-            raise ValueError(
-                f"Case status={self.status} 与步骤结果不一致（应为 {derived}）"
-            )
+            raise ValueError(f"Case status={self.status} 与步骤结果不一致（应为 {derived}）")
 
     @property
     def summary(self) -> JsonObject:
@@ -1364,9 +1400,7 @@ class EnginePort(Protocol):
         ...
 
 
-def _validate_partial_outcome_consistency(
-    kind: str, partial_outcome: CaseExecutionOutcome
-) -> None:
+def _validate_partial_outcome_consistency(kind: str, partial_outcome: CaseExecutionOutcome) -> None:
     """异常 kind/stage 必须与 partial 中当前失败步骤的 error 一致。
 
     P1：execution-stage 系统错误要求当前失败步 error.kind 匹配且 stage="execution"；
@@ -1382,14 +1416,10 @@ def _validate_partial_outcome_consistency(
     error = current.error or {}
     error_kind = error.get("kind")
     if error_kind != kind:
-        raise ValueError(
-            f"异常 kind={kind} 与当前步骤 error.kind={error_kind!r} 不一致"
-        )
+        raise ValueError(f"异常 kind={kind} 与当前步骤 error.kind={error_kind!r} 不一致")
     error_stage = error.get("stage")
     if error_stage != "execution":
-        raise ValueError(
-            f"当前步骤 error.stage 必须为 execution，实际为 {error_stage!r}"
-        )
+        raise ValueError(f"当前步骤 error.stage 必须为 execution，实际为 {error_stage!r}")
     # 失败步之后必须全部 skipped，之前不得出现 skipped（第一批无条件跳过）。
     failed_index = partial_outcome.steps.index(current)
     for step in partial_outcome.steps[:failed_index]:
@@ -1473,9 +1503,7 @@ class InvalidEnvironmentError(EngineError):
     def __init__(
         self, public_message: str = "执行环境配置无效", *, log_reason: str | None = None
     ) -> None:
-        super().__init__(
-            "invalid_environment", "preflight", public_message, log_reason=log_reason
-        )
+        super().__init__("invalid_environment", "preflight", public_message, log_reason=log_reason)
 
 
 class InvalidInputError(EngineError):

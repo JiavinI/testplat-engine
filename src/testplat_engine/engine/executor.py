@@ -32,6 +32,7 @@ from testplat_engine.engine.auth_injection import (
     secret_values,
 )
 from testplat_engine.engine.case_runner import CaseRunner
+from testplat_engine.engine.login_cache import LoginCache
 from testplat_engine.engine.login_render import render_headers
 from testplat_engine.engine.login_session import (
     LoginFailedError,
@@ -99,6 +100,7 @@ class SingleApiEngine:
         *,
         login_strategies: Sequence[LoginStrategy] = (),
         client_factory: Callable[[], HttpClient] | None = None,
+        login_cache_max_entries: int = 256,
     ) -> None:
         self._injected_client = http_client
         # 测试 seam：每次需要新 client 时调用（例如包了 httpx.MockTransport 的 HttpxClient）；
@@ -106,6 +108,8 @@ class SingleApiEngine:
         self._client_factory = client_factory
         # 内置 generic_flow 总是注册；插件重名 / 与内置冲突 → 启动期 ValueError（只含策略名）。
         self._strategies = validate_strategies(login_strategies)
+        # 3.3d：Engine 实例持有一份跨执行登录缓存；0 = 关闭（行为等同 0.4.0）。
+        self._login_cache = LoginCache(login_cache_max_entries)
         # 第一批 registry 只注册 api；其他 type 已由 Case 契约层在 preflight 拒绝。
         registry = StepExecutorRegistry()
         registry.register("api", ApiStepExecutor(self))
@@ -136,7 +140,8 @@ class SingleApiEngine:
             registry = Registry(assets_root=request.assets_root)
             case = registry.load_case(request.case_id)
             case_params = validate_case_request_params(
-                case, _thaw_json(request.params)  # type: ignore[arg-type]
+                case,
+                _thaw_json(request.params),  # type: ignore[arg-type]
             )
         except EngineError:
             raise
@@ -175,7 +180,7 @@ class SingleApiEngine:
 
     def new_session_pool(self) -> SessionPool:
         """每次执行一个会话池（Q6：只在 Engine 内部流转，不进公开 DTO）。"""
-        return SessionPool(self._strategies, self._acquire_login_client)
+        return SessionPool(self._strategies, self._acquire_login_client, cache=self._login_cache)
 
     async def execute_api(
         self,
@@ -237,7 +242,9 @@ class SingleApiEngine:
             if preserve_param_types:
                 # 冻结快照含 tuple/MappingProxy，渲染前解冻以便整字段占位符回填纯 JSON。
                 resolved = resolve_variables(
-                    api, _thaw_json(request.params), preserve_types=True  # type: ignore[arg-type]
+                    api,
+                    _thaw_json(request.params),
+                    preserve_types=True,  # type: ignore[arg-type]
                 )
             else:
                 resolved = resolve_variables(api, dict(request.params))
@@ -246,6 +253,8 @@ class SingleApiEngine:
             # 3.3b 按需登录（D8）：只有用到 login 身份的这一步才会触发登录。
             entry: SessionEntry | None = None
             login_headers: dict[str, str] | None = None
+            reauthenticated = False
+            cache_scope = request.auth.cache_scope if request.auth is not None else None
             if login_material is not None:
                 assert resolved_auth is not None
                 stage = "execution"
@@ -256,13 +265,20 @@ class SingleApiEngine:
                         login_host,
                         timeout_seconds=request.timeout_seconds,
                         connections=request.auth.connections,  # type: ignore[union-attr,arg-type]
+                        cache_scope=cache_scope,
                     )
                 except LoginFailedError as failure:
                     # D9：登录失败是业务结果（200 + 保存），不是系统异常。
                     return ApiExecutionOutcome(
                         status="failed",
                         error=failure.error_payload(),
-                        auth=public_auth(resolved_auth, [], login_ref=failure.login_ref),
+                        auth=public_auth(
+                            resolved_auth,
+                            [],
+                            login_ref=failure.login_ref,
+                            session_source="login",
+                            reauthenticated=False,
+                        ),
                         logins=logins(),
                     )
                 login_headers = render_headers(
@@ -286,24 +302,6 @@ class SingleApiEngine:
                         if k.lower() == "content-type" and not has_header(public_headers, k)
                     },
                 }
-            cookie_names = pool.cookie_names(entry) if entry is not None else []
-            public_request = self._redact_values(
-                self._build_public_request(
-                    method=resolved["method"],
-                    url=full_url,
-                    headers=public_headers,
-                    body=resolved.get("body"),
-                    body_type=body_type,
-                    extra_sensitive=self._injected_names(resolved_auth),
-                ),
-                secrets,
-            )
-            auth_info = public_auth(
-                resolved_auth,
-                overridden,
-                cookie_names=cookie_names,
-                login_ref=None if entry is None else entry.login_ref,
-            )
 
             # 先拿到 HTTP client；_acquire_client 失败仍属 preflight/internal-preflight。
             # 仅在 client 就绪后、真实 HTTP 调用前切换到 execution。
@@ -321,10 +319,97 @@ class SingleApiEngine:
                 timeout=request.timeout_seconds,
                 **body_kwargs,
             )
+
+            # 3.3d §3.2：业务 401 → 作废会话 → 重登 → 同方法/URL/body 重发一次。
+            # 公开 request/response 只保留第二次；第一次 401 响应体不进公开结果与日志。
+            if (
+                entry is not None
+                and login_material is not None
+                and resolved_auth is not None
+                and login_material.reauth_on_401
+                and response.status_code == 401
+            ):
+                logger.info("reauth identity=%s trigger_status=401", resolved_auth.identity)
+                await pool.invalidate_identity(resolved_auth.identity)
+                reauthenticated = True
+                try:
+                    entry = await pool.ensure(
+                        resolved_auth.identity,
+                        login_material,
+                        login_host,
+                        timeout_seconds=request.timeout_seconds,
+                        connections=request.auth.connections,  # type: ignore[union-attr,arg-type]
+                        cache_scope=cache_scope,
+                    )
+                except LoginFailedError as failure:
+                    return ApiExecutionOutcome(
+                        status="failed",
+                        error=failure.error_payload(),
+                        auth=public_auth(
+                            resolved_auth,
+                            [],
+                            login_ref=failure.login_ref,
+                            session_source="login",
+                            reauthenticated=True,
+                        ),
+                        logins=logins(),
+                    )
+                login_headers = render_headers(
+                    login_material.inject_headers, entry.values, login_host
+                )
+                secrets = pool.snapshot_secrets()
+                send_headers, public_headers, overridden = merge_headers(
+                    resolved.get("headers"), resolved_auth, login_headers
+                )
+                body_kwargs, send_headers = send_kwargs(
+                    body_type,
+                    resolved.get("body"),
+                    send_headers,
+                    resolved.get("content_type"),
+                )
+                if body_type == "raw" and send_headers is not None:
+                    public_headers = {
+                        **(public_headers or {}),
+                        **{
+                            k: v
+                            for k, v in send_headers.items()
+                            if k.lower() == "content-type" and not has_header(public_headers, k)
+                        },
+                    }
+                client, owns_client = entry.client, False
+                response = await client.request(
+                    method=resolved["method"],
+                    url=full_url,
+                    headers=send_headers,
+                    timeout=request.timeout_seconds,
+                    **body_kwargs,
+                )
+
             if entry is not None:
                 # D12：Cookie 身份的业务响应同样更新 jar；新 Cookie 值先入集合再构造快照。
                 pool.absorb_cookies(entry.client)
                 secrets = pool.snapshot_secrets()
+
+            cookie_names = pool.cookie_names(entry) if entry is not None else []
+            public_request = self._redact_values(
+                self._build_public_request(
+                    method=resolved["method"],
+                    url=full_url,
+                    headers=public_headers,
+                    body=resolved.get("body"),
+                    body_type=body_type,
+                    extra_sensitive=self._injected_names(resolved_auth),
+                ),
+                secrets,
+            )
+            auth_info = public_auth(
+                resolved_auth,
+                overridden,
+                cookie_names=cookie_names,
+                login_ref=None if entry is None else entry.login_ref,
+                session_source=None if entry is None else entry.session_source,
+                reauthenticated=reauthenticated,
+            )
             public_response = self._redact_values(
                 self._build_public_response(
                     response, extra_sensitive=self._injected_names(resolved_auth)
@@ -392,8 +477,7 @@ class SingleApiEngine:
                             EngineInternalError(
                                 stage,
                                 log_reason=(
-                                    f"client.close failed: {type(close_exc).__name__}: "
-                                    f"{close_exc}"
+                                    f"client.close failed: {type(close_exc).__name__}: {close_exc}"
                                 ),
                             ),
                             secrets,
@@ -431,9 +515,7 @@ class SingleApiEngine:
                 log_reason=str(exc),
             ) from exc
 
-    def _resolve_base_url(
-        self, api: Api, environment: Mapping[str, JsonValue]
-    ) -> str:
+    def _resolve_base_url(self, api: Api, environment: Mapping[str, JsonValue]) -> str:
         """从已解析环境中取 host；缺失或类型错误一律 invalid_environment。"""
         api_hosts = environment.get("api_hosts")
         if not isinstance(api_hosts, Mapping):
@@ -560,15 +642,22 @@ class SingleApiEngine:
         return str(value)
 
 
-
-def create_engine(*, login_strategies: Sequence[LoginStrategy] = ()) -> SingleApiEngine:
+def create_engine(
+    *,
+    login_strategies: Sequence[LoginStrategy] = (),
+    login_cache_max_entries: int = 256,
+) -> SingleApiEngine:
     """公开工厂：返回 ``SingleApiEngine``，供 Control 包适配器解析。
 
     ``login_strategies``（L1/E1）：Control 启动时把“entry point ∩ 白名单”的插件实例传入；
     内置 ``generic_flow`` 总是注册。重名或与内置冲突 → ``ValueError``（消息只含策略名）。
-    无参调用与 0.3.0 等价。
+    ``login_cache_max_entries``（3.3d）：跨执行登录缓存容量；``0`` 关闭（等同 0.4.0）；
+    负数 → ``ValueError``。无参调用默认开启容量 256 的缓存（无 ``cache_scope`` 时不写入）。
     """
-    return SingleApiEngine(login_strategies=login_strategies)
+    return SingleApiEngine(
+        login_strategies=login_strategies,
+        login_cache_max_entries=login_cache_max_entries,
+    )
 
 
 async def run_api(

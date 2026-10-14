@@ -12,7 +12,7 @@
 - 真实实现：`SingleApiEngine`（消费 Control 已解析的 `environment`，不再猜测 `config_root`）
 
 0.2 冻结 Case 公共 DTO、资产 schema 与校验契约；串行 CaseRunner 与 `api` StepExecutor 已接入同一 `execute` seam：`execute(CaseExecutionRequest)` 按声明顺序串行执行，默认 fail-fast，业务失败返回结果，timeout/transport/internal 抛异常并携带安全 `partial_outcome`。
-仍不提供重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。兼容说明见 `docs/COMPATIBILITY-0.2.md`；0.4.0 登录鉴权见 `docs/COMPATIBILITY-0.4.md`。
+仍不提供重试策略、认证管理、报告、队列、WebSocket 或 UI 集成。兼容说明见 `docs/COMPATIBILITY-0.2.md`；登录鉴权见 `docs/COMPATIBILITY-0.4.md`；跨执行缓存与 401 重发见 `docs/COMPATIBILITY-0.5.md`。
 
 ## 安装
 
@@ -54,6 +54,15 @@ asyncio.run(main())
 Case 通过同一入口执行（`CaseExecutionRequest`）。注意其 `timeout_seconds` 是**每个步骤**的 HTTP 超时，不是整个 Case 的总时长预算；Case 级限时需由调用方在外层施加（详见 `docs/COMPATIBILITY-0.2.md`）。
 
 旧入口 `run_api(api_id, registry, env, params)` 仍可用于本地示例，但会自行查找 env 文件；新 Control 集成应只依赖官方 `create_engine()`（实现 `EnginePort`），不要再猜测其它入口。
+
+
+## 跨执行登录缓存与 401 重发（0.5.0）
+
+- `create_engine(login_cache_max_entries=256)`：进程内跨执行复用登录命名值；传 `AuthTable(cache_scope=...)` 开启。
+  `login_cache_max_entries=0` 关闭（等同 0.4.0 每次登录）。Cookie 身份与无有效期身份不跨执行缓存。
+- 业务响应 HTTP 401 时默认重登并重发一次（`LoginAuth.reauth_on_401`，可关）。
+  公开结果只保留第二次请求/响应；单步最长耗时可达「2 次请求 + 1 次登录」。
+- 兼容说明见 `docs/COMPATIBILITY-0.5.md`；变更见 `CHANGELOG.md`。
 
 ## 开发检查
 

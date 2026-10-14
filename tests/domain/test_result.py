@@ -303,6 +303,7 @@ class TestApiResultUsagePatterns:
 
     def test_pattern_factory_methods_for_clean_api(self):
         """测试使用工厂方法提供清晰 API 的模式"""
+
         # 模拟 API 调用函数返回 ApiResult
         def mock_api_call(should_succeed: bool) -> ApiResult:
             if should_succeed:
