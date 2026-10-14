@@ -57,8 +57,8 @@ def make_success_steps() -> tuple[StepOutcome, StepOutcome]:
 
 
 def test_version_is_0_3_0() -> None:
-    # 3.3b 登录鉴权与公开 auth 扩展，按 D14 发布 0.4.0。
-    assert __version__ == "0.4.0"
+    # 3.3b 登录鉴权与公开 auth 扩展，跨执行缓存 + 401 重发，发布 0.5.0。
+    assert __version__ == "0.5.0"
 
 
 def test_case_request_is_frozen_and_json_serializable() -> None:
@@ -444,6 +444,7 @@ def test_s1_partial_outcome_and_error_payload_redacted() -> None:
 
 def test_p1_partial_outcome_requires_matching_kind_and_execution_stage() -> None:
     """P1：失败步须 kind 匹配且 stage=execution；覆盖 timeout/transport/internal。"""
+
     def make_partial(kind: str, *, stage: str | None = "execution") -> CaseExecutionOutcome:
         error = {"kind": kind, "message": "x"}
         if stage is not None:

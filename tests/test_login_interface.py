@@ -63,6 +63,7 @@ def test_login_auth_repr_to_dict_only_structure() -> None:
         "extract": ["token"],
         "header_names": ["X-TOKEN"],
         "session_cookie": False,
+        "reauth_on_401": True,
     }
     assert AuthTable({"b": m}).to_dict()["identities"]["b"]["kind"] == "login"
 

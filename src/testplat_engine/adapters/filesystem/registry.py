@@ -43,9 +43,7 @@ class Registry:
         api = yaml_to_api(data)
 
         if api.id != api_id:
-            raise ValueError(
-                f"API 文件中的 id ({api.id}) 与请求的 id ({api_id}) 不匹配"
-            )
+            raise ValueError(f"API 文件中的 id ({api.id}) 与请求的 id ({api_id}) 不匹配")
 
         return api
 
@@ -73,8 +71,6 @@ class Registry:
 
         # Python 3.11+ Path.is_relative_to；显式校验防止符号链接脱出根目录。
         if not candidate.is_relative_to(assets_root):
-            raise ValueError(
-                f"api_id 解析后超出 assets_root: {api_id} -> {candidate}"
-            )
+            raise ValueError(f"api_id 解析后超出 assets_root: {api_id} -> {candidate}")
 
         return candidate

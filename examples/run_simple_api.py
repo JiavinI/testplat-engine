@@ -66,9 +66,7 @@ def _prepare_assets(root: Path, base_url: str) -> Path:
     config_dir = root / "config" / "envs"
     api_dir.mkdir(parents=True)
     config_dir.mkdir(parents=True)
-    (config_dir / "test.yaml").write_text(
-        f"api_hosts:\n  local: {base_url}\n", encoding="utf-8"
-    )
+    (config_dir / "test.yaml").write_text(f"api_hosts:\n  local: {base_url}\n", encoding="utf-8")
     (api_dir / "get_status.yaml").write_text(
         "id: api.common.get_status\n"
         "name: 获取状态码\n"
@@ -84,9 +82,9 @@ def _prepare_assets(root: Path, base_url: str) -> Path:
         "host: local\n"
         "method: POST\n"
         "url: /post\n"
-        "request:\n  body:\n    username: \"${username}\"\n"
-        "    email: \"${email}\"\n"
-        "success:\n  path: $.json.username\n  value: \"${username}\"\n",
+        'request:\n  body:\n    username: "${username}"\n'
+        '    email: "${email}"\n'
+        'success:\n  path: $.json.username\n  value: "${username}"\n',
         encoding="utf-8",
     )
     return assets

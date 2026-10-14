@@ -19,9 +19,7 @@ CASE_SCHEMA_VERSION = "0.2"
 SUPPORTED_STEP_TYPES = frozenset({"api"})
 
 # schema-owned 顶层与 step 字段；未知键一律拒绝。
-CASE_TOP_LEVEL_KEYS = frozenset(
-    {"schema_version", "id", "name", "desc", "tags", "params", "steps"}
-)
+CASE_TOP_LEVEL_KEYS = frozenset({"schema_version", "id", "name", "desc", "tags", "params", "steps"})
 API_STEP_KEYS = frozenset({"step_id", "type", "api_id", "name", "params", "output"})
 
 

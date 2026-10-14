@@ -112,15 +112,27 @@ class CaseRunner:
                 step_started = time.perf_counter()
                 try:
                     outcome = await self._run_step(
-                        step, assets_root, frozen_env, frozen_params, aliases, timeout_seconds,
-                        step_started, auth, pool,
+                        step,
+                        assets_root,
+                        frozen_env,
+                        frozen_params,
+                        aliases,
+                        timeout_seconds,
+                        step_started,
+                        auth,
+                        pool,
                     )
                     if outcome.status == "success" and step.output is not None:
                         # 声明了 output 才写 alias；形状不符是 executor 缺陷，走 internal。
                         aliases[step.output] = bind_alias_response(outcome.response)
                 except EngineError as exc:
                     raise self._attribute_system_error(
-                        exc, case, index, outcomes, step_started, started,
+                        exc,
+                        case,
+                        index,
+                        outcomes,
+                        step_started,
+                        started,
                         logins=_logins(pool),
                     ) from exc
                 except AliasShapeError as exc:
@@ -128,7 +140,13 @@ class CaseRunner:
                         "execution", log_reason=f"alias shape mismatch: {exc}"
                     )
                     raise self._attribute_system_error(
-                        wrapped, case, index, outcomes, step_started, started, origin=exc,
+                        wrapped,
+                        case,
+                        index,
+                        outcomes,
+                        step_started,
+                        started,
+                        origin=exc,
                         logins=_logins(pool),
                     ) from exc
                 except Exception as exc:
@@ -137,7 +155,13 @@ class CaseRunner:
                         "execution", log_reason=f"{type(exc).__name__}: {exc}"
                     )
                     raise self._attribute_system_error(
-                        wrapped, case, index, outcomes, step_started, started, origin=exc,
+                        wrapped,
+                        case,
+                        index,
+                        outcomes,
+                        step_started,
+                        started,
+                        origin=exc,
                         logins=_logins(pool),
                     ) from exc
 

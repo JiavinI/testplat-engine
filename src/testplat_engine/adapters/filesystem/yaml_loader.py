@@ -31,7 +31,7 @@ def load_yaml(file_path: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"文件不存在: {file_path}")
 
     try:
-        with open(file_path, encoding='utf-8') as f:
+        with open(file_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
             if data is None:
                 raise ValueError(f"YAML 文件为空: {file_path}")
@@ -56,20 +56,20 @@ def yaml_to_api(data: dict[str, Any]) -> Api:
     """
     # 提取必需字段
     try:
-        api_id = data['id']
-        name = data['name']
-        method = data['method']
-        url = data['url']
-        host = data['host']
+        api_id = data["id"]
+        name = data["name"]
+        method = data["method"]
+        url = data["url"]
+        host = data["host"]
     except KeyError as e:
         raise ValueError(f"缺少必需字段: {e}") from e
 
     # 提取可选字段,使用默认值
-    request = data.get('request', {})
-    success = data.get('success', {})
+    request = data.get("request", {})
+    success = data.get("success", {})
 
     # 3.3a 身份声明（Q6）：缺省或 null → 未声明；"" / 非字符串 → invalid_asset。
-    auth = data.get('auth')
+    auth = data.get("auth")
     if auth is not None and (not isinstance(auth, str) or not auth.strip()):
         raise ValueError(f"auth 必须是非空字符串身份名或 none,实际类型为: {type(auth).__name__}")
 

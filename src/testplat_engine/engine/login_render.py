@@ -6,8 +6,9 @@
 2. 收集一个 login 身份的静态秘密（原始 ``${secret:}`` 值、SecretStr 参数、
    ``connections`` 中的 SecretStr），供执行级按值替换集合（H1）。
 
-不变量：``SecretStr.reveal()`` 全仓只允许在 ``auth_injection.py`` 与本模块调用（AST 测试）；
-渲染出的明文只交给 HTTP client 或进入内存中的替换集合，绝不进日志、异常消息或公开结构。
+不变量：``SecretStr.reveal()`` 全仓只允许在 ``auth_injection.py``、本模块与
+``login_cache.py`` 调用（AST 测试）；渲染出的明文只交给 HTTP client 或进入内存中的
+替换集合，绝不进日志、异常消息或公开结构。
 """
 
 from __future__ import annotations

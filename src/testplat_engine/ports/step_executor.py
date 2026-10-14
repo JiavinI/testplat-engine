@@ -35,9 +35,7 @@ class StepExecutionContext:
 class StepExecutor(Protocol):
     """可注册的步骤执行器；第一批仅实现 type=api。"""
 
-    async def execute_step(
-        self, step: CaseStep, context: StepExecutionContext
-    ) -> StepOutcome:
+    async def execute_step(self, step: CaseStep, context: StepExecutionContext) -> StepOutcome:
         """执行单个步骤并返回符合不变量的 StepOutcome。"""
         ...
 

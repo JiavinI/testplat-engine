@@ -74,8 +74,7 @@ class Api:
         valid_methods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
         if self.method.upper() not in valid_methods:
             raise ValueError(
-                f"无效的 HTTP 方法: {self.method}. "
-                f"支持的方法: {', '.join(sorted(valid_methods))}"
+                f"无效的 HTTP 方法: {self.method}. 支持的方法: {', '.join(sorted(valid_methods))}"
             )
 
         if not self.url:
@@ -89,7 +88,7 @@ class Api:
             raise ValueError("API auth 必须是非空字符串身份名或 none")
 
         # 规范化 method 为大写
-        object.__setattr__(self, 'method', self.method.upper())
+        object.__setattr__(self, "method", self.method.upper())
 
     @property
     def full_url(self) -> str:

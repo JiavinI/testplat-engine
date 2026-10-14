@@ -166,10 +166,13 @@ def public_auth(
     *,
     cookie_names: list[str] | None = None,
     login_ref: int | None = None,
+    session_source: str | None = None,
+    reauthenticated: bool = False,
 ) -> JsonObject | None:
-    """公开 ``auth`` 字段（0.4 七键）：只含身份名、kind、档位、header/Cookie 名与登录下标。
+    """公开 ``auth`` 字段（0.5 九键）：七键 + ``session_source`` / ``reauthenticated``。
 
-    静态 header 身份：``tier=None``、``cookie_names=[]``、``login_ref=None``。
+    静态 header 身份：``tier=None``、``cookie_names=[]``、``login_ref=None``、
+    ``session_source=None``、``reauthenticated=False``。
     """
     if resolved is None:
         return None
@@ -183,4 +186,6 @@ def public_auth(
         "overridden_headers": list(overridden),
         "cookie_names": list(cookie_names or []) if is_login else [],
         "login_ref": login_ref if is_login else None,
+        "session_source": session_source if is_login else None,
+        "reauthenticated": reauthenticated if is_login else False,
     }

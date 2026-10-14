@@ -96,9 +96,7 @@ def load_case(case_id: str, assets_root: Path) -> Case:
     return case
 
 
-def parse_case_dict(
-    data: Mapping[str, Any], *, expected_case_id: str | None = None
-) -> Case:
+def parse_case_dict(data: Mapping[str, Any], *, expected_case_id: str | None = None) -> Case:
     """将字典解析为 Case，并做严格 schema / 引用校验。"""
     if not isinstance(data, Mapping):
         raise InvalidAssetError(
@@ -137,9 +135,7 @@ def parse_case_dict(
     if expected_case_id is not None and case_id != expected_case_id:
         # A1：不允许大小写或连字符自动归一。
         raise InvalidAssetError(
-            public_message=(
-                f"Case 文件内 id ({case_id}) 与请求 id ({expected_case_id}) 不一致"
-            ),
+            public_message=(f"Case 文件内 id ({case_id}) 与请求 id ({expected_case_id}) 不一致"),
             log_reason=f"file_id={case_id!r} request_id={expected_case_id!r}",
         )
 

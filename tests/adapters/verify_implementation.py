@@ -39,36 +39,33 @@ def test_yaml_to_api_conversion():
 
     # 测试完整数据
     data = {
-        'id': 'api.test.example',
-        'name': '测试 API',
-        'method': 'POST',
-        'url': '/api/test',
-        'host': 'test_server',
-        'request': {
-            'headers': {'Content-Type': 'application/json'},
-            'body': {'key': 'value'}
-        },
-        'success': {'status_code': 201}
+        "id": "api.test.example",
+        "name": "测试 API",
+        "method": "POST",
+        "url": "/api/test",
+        "host": "test_server",
+        "request": {"headers": {"Content-Type": "application/json"}, "body": {"key": "value"}},
+        "success": {"status_code": 201},
     }
 
     api = yaml_to_api(data)
     assert isinstance(api, Api)
-    assert api.id == 'api.test.example'
-    assert api.name == '测试 API'
-    assert api.method == 'POST'
-    assert api.url == '/api/test'
-    assert api.host == 'test_server'
-    assert api.request == data['request']
-    assert api.success == data['success']
+    assert api.id == "api.test.example"
+    assert api.name == "测试 API"
+    assert api.method == "POST"
+    assert api.url == "/api/test"
+    assert api.host == "test_server"
+    assert api.request == data["request"]
+    assert api.success == data["success"]
     print("  ✓ 完整数据转换成功")
 
     # 测试默认值
     minimal_data = {
-        'id': 'api.test.minimal',
-        'name': '最小 API',
-        'method': 'GET',
-        'url': '/minimal',
-        'host': 'server'
+        "id": "api.test.minimal",
+        "name": "最小 API",
+        "method": "GET",
+        "url": "/minimal",
+        "host": "server",
     }
 
     api = yaml_to_api(minimal_data)
@@ -78,7 +75,7 @@ def test_yaml_to_api_conversion():
 
     # 测试错误处理: 缺少字段
     try:
-        invalid_data = {'id': 'test', 'name': 'test'}
+        invalid_data = {"id": "test", "name": "test"}
         yaml_to_api(invalid_data)
         assert False, "应该抛出 ValueError"
     except ValueError as e:
@@ -88,12 +85,12 @@ def test_yaml_to_api_conversion():
     # 测试错误处理: 类型错误
     try:
         invalid_data = {
-            'id': 'test',
-            'name': 'test',
-            'method': 'GET',
-            'url': '/test',
-            'host': 'server',
-            'request': 'invalid'
+            "id": "test",
+            "name": "test",
+            "method": "GET",
+            "url": "/test",
+            "host": "server",
+            "request": "invalid",
         }
         yaml_to_api(invalid_data)
         assert False, "应该抛出 ValueError"
@@ -110,28 +107,28 @@ def test_api_model_validation():
 
     # 测试有效数据
     api = Api(
-        id='api.test.valid',
-        name='有效 API',
-        method='get',  # 小写会被规范化
-        url='/test',
-        host='server',
+        id="api.test.valid",
+        name="有效 API",
+        method="get",  # 小写会被规范化
+        url="/test",
+        host="server",
         request={},
-        success={}
+        success={},
     )
-    assert api.method == 'GET'  # 验证大写规范化
+    assert api.method == "GET"  # 验证大写规范化
     print("  ✓ 有效数据创建成功")
     print(f"  ✓ HTTP 方法规范化: get -> {api.method}")
 
     # 测试无效 HTTP 方法
     try:
         Api(
-            id='test',
-            name='test',
-            method='INVALID',
-            url='/test',
-            host='server',
+            id="test",
+            name="test",
+            method="INVALID",
+            url="/test",
+            host="server",
             request={},
-            success={}
+            success={},
         )
         assert False, "应该抛出 ValueError"
     except ValueError as e:
@@ -140,15 +137,7 @@ def test_api_model_validation():
 
     # 测试空字段
     try:
-        Api(
-            id='',
-            name='test',
-            method='GET',
-            url='/test',
-            host='server',
-            request={},
-            success={}
-        )
+        Api(id="", name="test", method="GET", url="/test", host="server", request={}, success={})
         assert False, "应该抛出 ValueError"
     except ValueError as e:
         assert "id 不能为空" in str(e)
@@ -175,9 +164,10 @@ def main():
     except Exception as e:
         print(f"\n✗ 测试失败: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

@@ -56,12 +56,7 @@ class HttpxClient(HttpClient):
         """
         self._client = httpx.AsyncClient(transport=transport)
 
-    async def request(
-        self,
-        method: str,
-        url: str,
-        **kwargs
-    ) -> HttpResponse:
+    async def request(self, method: str, url: str, **kwargs) -> HttpResponse:
         """发送 HTTP 请求 (实现父类抽象方法)
 
         Args:

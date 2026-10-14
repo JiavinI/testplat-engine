@@ -31,6 +31,7 @@ class HttpResponse:
         headers: 响应头字典
         body: 响应体 (JSON 解析后的对象,可以是 dict, list 或基本类型)
     """
+
     status_code: int
     headers: dict[str, str]
     body: Any  # JSON 解析后的对象
@@ -47,12 +48,7 @@ class HttpClient(ABC):
     """
 
     @abstractmethod
-    async def request(
-        self,
-        method: str,
-        url: str,
-        **kwargs: Any
-    ) -> HttpResponse:
+    async def request(self, method: str, url: str, **kwargs: Any) -> HttpResponse:
         """发送 HTTP 请求
 
         Args:

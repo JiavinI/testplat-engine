@@ -1,0 +1,12 @@
+id: api.login.buyer_echo_post
+name: 以 buyer 身份 POST 回显
+host: target
+method: POST
+url: /echo/token-post
+auth: buyer
+request:
+  body:
+    action: ping
+    n: 1
+success:
+  status_code: 200

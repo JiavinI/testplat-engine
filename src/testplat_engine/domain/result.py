@@ -58,8 +58,7 @@ class ApiResult:
         valid_statuses = {"success", "failed"}
         if self.status not in valid_statuses:
             raise ValueError(
-                f"无效的状态值: {self.status}. "
-                f"支持的状态: {', '.join(sorted(valid_statuses))}"
+                f"无效的状态值: {self.status}. 支持的状态: {', '.join(sorted(valid_statuses))}"
             )
 
         # 如果状态是 failed，确保有错误信息
@@ -68,7 +67,7 @@ class ApiResult:
 
         # 如果状态是 success，清空错误信息
         if self.status == "success":
-            object.__setattr__(self, 'error', None)
+            object.__setattr__(self, "error", None)
 
     @property
     def is_success(self) -> bool:
