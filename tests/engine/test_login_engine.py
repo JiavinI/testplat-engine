@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 import pytest
 
 import testplat_engine.engine.login_session as login_session
@@ -65,6 +66,73 @@ def login_paths(target: FakeTarget) -> list[str]:
 
 
 # ------------------------------------------------------------ 第 1 档：通用单步
+
+
+@pytest.mark.parametrize(
+    ("username", "password"),
+    [("张建雨", "123456"), ("u", "p"), ("", ""), (" user\t ", "pw\r\n\x00 ")],
+)
+async def test_short_credentials_login_cache_and_redaction(username: str, password: str) -> None:
+    class ShortCredentialTarget(FakeTarget):
+        def _login_ok(self, user, supplied, *, csrf=False):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "token": self._token("short-account"),
+                        "echo_user": user,
+                        "echo_credential": supplied,
+                    },
+                },
+            )
+
+        def handler(self, request):
+            response = super().handler(request)
+            if request.url.path == "/echo/token":
+                return httpx.Response(
+                    200, json={"echo_user": username, "echo_credential": password}
+                )
+            return response
+
+    target = ShortCredentialTarget()
+    step = LoginStep(
+        name="login",
+        method="POST",
+        path="/login/json",
+        body=LoginBody(
+            type="json",
+            fields={"username": SecretStr(username), "password": SecretStr(password)},
+        ),
+        extract=(ExtractRule(source="body_json", path="$.data.token", as_name="token"),),
+    )
+    auth = table(
+        buyer=buyer_material(
+            step=step,
+            secret_values=(SecretStr(username), SecretStr(password)),
+            validity=Validity(ttl_seconds=600),
+        ),
+        cache_scope="short-credential-regression",
+    )
+    engine = engine_for(target)
+    for source in ("login", "cache"):
+        result = (await engine.execute(api("api.login.buyer_echo", auth))).to_dict()
+        assert result["status"] == "success"
+        assert result["auth"]["session_source"] == source
+        assert result["response"]["body"] == {
+            "echo_user": "***" if username else "",
+            "echo_credential": "***" if password else "",
+        }
+        if source == "login":
+            record = result["logins"][0]["steps"][0]
+            assert record["request"]["body"] == {
+                "username": "***" if username else "",
+                "password": "***",
+            }
+            assert record["response"]["body"]["data"]["echo_credential"] == (
+                "***" if password else ""
+            )
+    assert len(login_paths(target)) == 1
 
 
 async def test_tier1_buyer_login_inject_and_redact() -> None:

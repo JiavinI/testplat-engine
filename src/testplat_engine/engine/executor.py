@@ -56,6 +56,7 @@ from testplat_engine.interface import (
     ErrorStage,
     InvalidAssetError,
     InvalidEnvironmentError,
+    InvalidInputError,
     JsonObject,
     JsonValue,
     LoginAuth,
@@ -249,6 +250,20 @@ class SingleApiEngine:
             else:
                 resolved = resolve_variables(api, dict(request.params))
             body_type = resolved.get("body_type", "json")
+            if request.request_override is not None and "body" in request.request_override:
+                # 原样使用整个临时请求体，保留 JSON 类型、空值及字面量占位符。
+                resolved["body"] = _thaw_json(request.request_override["body"])
+                body = resolved["body"]
+                if body_type in {"query", "form"} and (
+                    not isinstance(body, Mapping)
+                    or any(
+                        value is not None and not isinstance(value, (str, int, float, bool))
+                        for value in body.values()
+                    )
+                ):
+                    raise InvalidInputError("Query/Form 临时内容必须是标量键值对象")
+                if body_type == "raw" and not isinstance(body, str):
+                    raise InvalidInputError("Raw 临时请求体必须是字符串")
 
             # 3.3b 按需登录（D8）：只有用到 login 身份的这一步才会触发登录。
             entry: SessionEntry | None = None
@@ -290,9 +305,15 @@ class SingleApiEngine:
                 resolved.get("headers"), resolved_auth, login_headers
             )
             body_kwargs, send_headers = send_kwargs(
-                body_type, resolved.get("body"), send_headers, resolved.get("content_type")
+                body_type,
+                resolved.get("body"),
+                send_headers,
+                resolved.get("content_type"),
+                explicit_json_null=request.request_override is not None,
             )
-            if body_type == "raw" and send_headers is not None:
+            if (
+                body_type == "raw" or request.request_override is not None
+            ) and send_headers is not None:
                 # Q4：raw 自动补的 Content-Type 同样出现在公开快照中（非秘密）。
                 public_headers = {
                     **(public_headers or {}),
@@ -366,8 +387,11 @@ class SingleApiEngine:
                     resolved.get("body"),
                     send_headers,
                     resolved.get("content_type"),
+                    explicit_json_null=request.request_override is not None,
                 )
-                if body_type == "raw" and send_headers is not None:
+                if (
+                    body_type == "raw" or request.request_override is not None
+                ) and send_headers is not None:
                     public_headers = {
                         **(public_headers or {}),
                         **{

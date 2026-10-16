@@ -209,14 +209,6 @@ _BAD_CONSTRUCTIONS: list[tuple[str, Callable[[], object]]] = [
             }
         ),
     ),
-    ("header-short", lambda: StaticHeaderAuth(headers={"X-Key": SecretStr("tp-fake")})),
-    (
-        "raw-short",
-        lambda: StaticHeaderAuth(
-            headers={"Authorization": SecretStr(ADMIN_HEADER_VALUE)},
-            secret_values=(SecretStr("tp-fak7"),),
-        ),
-    ),
     (
         "raw-not-secretstr",
         lambda: StaticHeaderAuth(

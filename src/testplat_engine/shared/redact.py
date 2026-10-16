@@ -105,8 +105,10 @@ def redact_secret_values(value: Any, secrets: tuple[str, ...]) -> Any:
 
 
 def redact_secret_text(text: str, secrets: tuple[str, ...]) -> str:
-    """对单个字符串做按值替换。"""
+    """长秘密按子串替换；短凭据只匹配完整值，避免误改 status、URL 等正常文本。"""
+    if text in secrets:
+        return _REDACTED
     for secret in secrets:
-        if secret and secret in text:
+        if len(secret) >= 8 and secret in text:
             text = text.replace(secret, _REDACTED)
     return text

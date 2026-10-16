@@ -139,3 +139,17 @@ def test_engine_port_is_protocol_for_single_entry_execution() -> None:
 
     engine: EnginePort = FakeEngine()
     assert engine is not None
+
+
+def test_temporary_request_body_is_deeply_frozen() -> None:
+    body = {"nested": [1, False, None]}
+    request = ApiExecutionRequest(
+        "api.test", Path("/assets"), {}, {}, request_override={"body": body}
+    )
+    body["nested"].append("changed")
+    assert request.to_dict()["request_override"] == {"body": {"nested": [1, False, None]}}
+    with pytest.raises(TypeError):
+        request.request_override["body"] = {}  # type: ignore[index]
+    for invalid in ({}, {"auth": "none"}, {"body": {}, "headers": {}}):
+        with pytest.raises(ValueError, match="request_override"):
+            ApiExecutionRequest("api.test", Path("/assets"), {}, {}, request_override=invalid)

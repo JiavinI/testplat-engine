@@ -144,18 +144,16 @@ def merge_headers(
 def secret_values(resolved: ResolvedAuth | None) -> tuple[str, ...]:
     """本次执行的按值替换集合（Q5）：原始变量值 + 完整 header 值，长度降序。
 
-    secret_values 非空时，短于 8 的 header 值不会含有任何（≥8 的）原始秘密，
-    因此不加入集合，避免误伤普通文本；secret_values 为空时 header 值已在构造期
-    强制 ≥8。
+    收集全部非空凭据值。短凭据在公开面仅做完整值匹配，不替换普通文本的子串。
     """
     if resolved is None or not isinstance(resolved.material, StaticHeaderAuth):
         # login 身份的秘密由会话池维护（执行级集合，H1）。
         return ()
     material = resolved.material
-    values = {item.reveal() for item in material.secret_values}
+    values = {item.reveal() for item in material.secret_values if len(item)}
     for secret in material.headers.values():
         text = secret.reveal()
-        if len(text) >= 8:
+        if text:
             values.add(text)
     return tuple(sorted(values, key=len, reverse=True))
 
