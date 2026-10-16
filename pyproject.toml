@@ -1,6 +1,6 @@
 [project]
 name = "testplat-engine"
-version = "0.5.0"
+version = "0.5.1"
 description = "通用接口自动化测试平台 - 执行引擎"
 readme = "README.md"
 requires-python = ">=3.11"
