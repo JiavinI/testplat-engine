@@ -166,6 +166,7 @@ class SingleApiEngine:
         environment: Mapping[str, JsonValue],
         *,
         auth: AuthTable | None = None,
+        identity: str | None = None,
     ) -> None:
         """只做资产加载、host 与身份解析，不发请求；供 Case 在执行前整体预检。
 
@@ -173,7 +174,7 @@ class SingleApiEngine:
         """
         api = self._load_api(api_id, assets_root)
         self._resolve_base_url(api, environment)
-        resolved_auth = resolve_identity(api, auth)
+        resolved_auth = resolve_identity(api, auth, identity)
         if resolved_auth is not None and isinstance(resolved_auth.material, LoginAuth):
             preflight_login(
                 resolved_auth.identity, resolved_auth.material, environment, self._strategies
@@ -229,7 +230,7 @@ class SingleApiEngine:
             api = self._load_api(request.api_id, request.assets_root)
             base_url = self._resolve_base_url(api, request.environment)
             # 身份解析属于预检：失败抛 invalid_environment，此时尚未发出任何请求。
-            resolved_auth = resolve_identity(api, request.auth)
+            resolved_auth = resolve_identity(api, request.auth, request.identity)
             login_material: LoginAuth | None = None
             login_host = ""
             if resolved_auth is not None and isinstance(resolved_auth.material, LoginAuth):
@@ -246,9 +247,13 @@ class SingleApiEngine:
                     api,
                     _thaw_json(request.params),
                     preserve_types=True,  # type: ignore[arg-type]
+                    skip_body=request.request_override is not None,
                 )
             else:
-                resolved = resolve_variables(api, dict(request.params))
+                resolved = resolve_variables(
+                    api, _thaw_json(request.params),
+                    skip_body=request.request_override is not None,
+                )
             body_type = resolved.get("body_type", "json")
             if request.request_override is not None and "body" in request.request_override:
                 # 原样使用整个临时请求体，保留 JSON 类型、空值及字面量占位符。
@@ -541,6 +546,8 @@ class SingleApiEngine:
 
     def _resolve_base_url(self, api: Api, environment: Mapping[str, JsonValue]) -> str:
         """从已解析环境中取 host；缺失或类型错误一律 invalid_environment。"""
+        if api.projects and environment.get("business_project") not in api.projects:
+            raise InvalidEnvironmentError("接口不适用于当前业务项目")
         api_hosts = environment.get("api_hosts")
         if not isinstance(api_hosts, Mapping):
             raise InvalidEnvironmentError(

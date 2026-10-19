@@ -1,7 +1,7 @@
 """3.3a 身份解析与凭证注入（Engine 内部模块）。
 
 职责：
-1. 预检：按资产 ``auth`` 声明查 ``AuthTable``，解析出本次请求要用的身份；
+1. 预检：优先按调用者选择、再按旧资产 ``auth`` 声明查 ``AuthTable``，解析本次身份；
    身份不存在 / 不可用 / 未知 kind / 声明了身份但没有身份表 → ``InvalidEnvironmentError``
    （preflight，422，不保存记录）。``public_message`` 只含身份名（及 Control 提供的
    只含变量名的 ``public_reason``），``log_reason`` 同样不含值。
@@ -53,14 +53,18 @@ class ResolvedAuth:
         return f"ResolvedAuth(identity={self.identity!r}, header_names={list(self.header_names)!r})"
 
 
-def resolve_identity(api: Api, auth: AuthTable | None) -> ResolvedAuth | None:
-    """按设计稿 §5.3 顺序解析身份；返回 None 表示匿名（与 v0.2.0 一致）。
+def resolve_identity(
+    api: Api, auth: AuthTable | None, identity: str | None = None
+) -> ResolvedAuth | None:
+    """调用者选择优先，未选择时兼容旧资产身份规则；返回 None 表示匿名。
 
-    1. 资产 ``auth: none`` → 匿名（即使配置了 default_identity，§6-8）。
-    2. 资产 ``auth: <名>`` → 查表；无身份表（Q2）或名不存在 → 422。
-    3. 未声明 → ``default_identity``；没有则匿名。
+    1. 调用者提供 ``identity`` 时覆盖资产 ``auth``；``none`` 显式匿名。
+    2. 未提供时使用旧资产 ``auth``；其中 ``none`` 同样显式匿名。
+    3. 两者均未声明时使用 ``default_identity``；没有则匿名。
+    选择具名身份后查表；无身份表或名不存在 → 422。
     """
-    declared = api.auth
+    # 调用者显式选择覆盖旧资产声明；兼容回退不会改变共享 API 对象。
+    declared = api.auth if identity is None else identity
     if declared == RESERVED_IDENTITY_NONE:
         return None
     if declared is not None:

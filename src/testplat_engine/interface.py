@@ -1095,6 +1095,8 @@ class ApiExecutionRequest:
     auth: AuthTable | None = None
     # 本次调试的实际请求覆盖；body 整体替换，不渲染，不修改资产。
     request_override: Mapping[str, JsonValue] | None = None
+    # 调用者选择优先于旧资产 auth；none 为显式匿名，省略沿用兼容回退。
+    identity: str | None = None
 
     def __post_init__(self) -> None:
         if not self.api_id:
@@ -1107,6 +1109,8 @@ class ApiExecutionRequest:
         )
         object.__setattr__(self, "params", _snapshot_object(self.params, "params", redact=False))
         _validate_auth_table(self.auth)
+        if self.identity is not None and self.identity != RESERVED_IDENTITY_NONE:
+            _validate_identity_name(self.identity, "调用身份")
         if self.request_override is not None:
             if not isinstance(self.request_override, Mapping) or set(self.request_override) != {
                 "body"
@@ -1135,6 +1139,8 @@ class ApiExecutionRequest:
             payload["auth"] = self.auth.to_dict()
         if self.request_override is not None:
             payload["request_override"] = _thaw_json(self.request_override)
+        if self.identity is not None:
+            payload["identity"] = self.identity
         return payload
 
 

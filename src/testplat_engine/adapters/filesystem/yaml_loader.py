@@ -82,6 +82,9 @@ def yaml_to_api(data: dict[str, Any]) -> Api:
         raise ValueError(f"success 必须是字典类型,实际为: {type(success).__name__}")
 
     # 创建 Api 实例 (会在 __post_init__ 中进行字段验证)
+    projects = data.get("projects", [])
+    if not isinstance(projects, list):
+        raise ValueError("projects 必须是项目名数组")
     return Api(
         id=api_id,
         name=name,
@@ -91,4 +94,5 @@ def yaml_to_api(data: dict[str, Any]) -> Api:
         request=request,
         success=success,
         auth=auth,
+        projects=tuple(projects),
     )

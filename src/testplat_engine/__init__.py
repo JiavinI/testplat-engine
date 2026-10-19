@@ -1,6 +1,6 @@
 """testplat-engine: 通用接口自动化测试平台 - 执行引擎"""
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 from testplat_engine.engine.executor import SingleApiEngine, create_engine, run_api
 from testplat_engine.interface import (

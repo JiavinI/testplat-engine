@@ -20,7 +20,7 @@ SUPPORTED_STEP_TYPES = frozenset({"api"})
 
 # schema-owned 顶层与 step 字段；未知键一律拒绝。
 CASE_TOP_LEVEL_KEYS = frozenset({"schema_version", "id", "name", "desc", "tags", "params", "steps"})
-API_STEP_KEYS = frozenset({"step_id", "type", "api_id", "name", "params", "output"})
+API_STEP_KEYS = frozenset({"step_id", "type", "api_id", "name", "params", "output", "identity"})
 
 
 def is_valid_case_id(case_id: str) -> bool:
@@ -47,6 +47,7 @@ class CaseStep:
     name: str | None = None
     params: dict[str, JsonValue] = field(default_factory=dict)
     output: str | None = None
+    identity: str | None = None
 
     def __post_init__(self) -> None:
         if not is_valid_step_id(self.step_id):
@@ -55,6 +56,11 @@ class CaseStep:
             raise ValueError("type 不能为空")
         if not self.api_id:
             raise ValueError("api_id 不能为空")
+        if self.identity is not None:
+            from testplat_engine.interface import RESERVED_IDENTITY_NONE, _validate_identity_name
+
+            if self.identity != RESERVED_IDENTITY_NONE:
+                _validate_identity_name(self.identity, "步骤调用身份")
         if self.name is not None and (not isinstance(self.name, str) or not self.name):
             raise ValueError("name 若提供则必须为非空字符串")
         if self.output is not None:
@@ -66,7 +72,7 @@ class CaseStep:
 
     def to_dict(self) -> JsonObject:
         """规范化字典表示，供 DTO/夹具对照。"""
-        return {
+        payload = {
             "step_id": self.step_id,
             "type": self.type,
             "api_id": self.api_id,
@@ -74,6 +80,9 @@ class CaseStep:
             "params": dict(self.params),
             "output": self.output,
         }
+        if self.identity is not None:
+            payload["identity"] = self.identity
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

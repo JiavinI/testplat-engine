@@ -46,6 +46,12 @@ def validate_asset_document(data: Mapping[str, Any]) -> None:
     request = data.get("request")
     if not isinstance(request, Mapping):
         return
+    if "template" in request and request["template"] != "structured":
+        raise ValueError("request.template 仅支持 structured")
+    if request.get("template") == "structured" and not isinstance(
+        request.get("inputs", {}), Mapping
+    ):
+        raise ValueError("structured inputs 必须是对象")
     body_type = request.get("type", "json")
     if body_type not in BODY_TYPES:
         # multipart 与任何未知类型都在这里拒绝；类型名截断后才进消息。

@@ -56,9 +56,9 @@ def make_success_steps() -> tuple[StepOutcome, StepOutcome]:
     )
 
 
-def test_version_is_0_5_1() -> None:
-    # 请求内容覆盖与凭据兼容扩展的本地候选版本。
-    assert __version__ == "0.5.1"
+def test_version_is_0_5_2() -> None:
+    # 调用身份与结构化 API 模板的本地候选版本。
+    assert __version__ == "0.5.2"
 
 
 def test_case_request_is_frozen_and_json_serializable() -> None:
