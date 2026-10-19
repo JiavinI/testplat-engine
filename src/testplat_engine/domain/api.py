@@ -50,9 +50,9 @@ class Api:
     host: str
     request: dict[str, Any]
     success: dict[str, Any]
-    # 3.3a：身份声明。None=未声明（走 default_identity）；"none"=显式匿名；其余为身份名。
-    # 只存身份名，资产里永远不出现秘密。
+    # 旧资产身份声明仅作兼容回退；新资产由调用者传 identity，不绑定账号。
     auth: str | None = None
+    projects: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """初始化后验证
@@ -86,6 +86,10 @@ class Api:
         if self.auth is not None and (not isinstance(self.auth, str) or not self.auth.strip()):
             # Q6：空串或非字符串不是合法身份声明；消息不回显值。
             raise ValueError("API auth 必须是非空字符串身份名或 none")
+        if not isinstance(self.projects, tuple) or any(
+            not isinstance(item, str) or not item for item in self.projects
+        ):
+            raise ValueError("projects 必须是非空项目名组成的 tuple")
 
         # 规范化 method 为大写
         object.__setattr__(self, "method", self.method.upper())

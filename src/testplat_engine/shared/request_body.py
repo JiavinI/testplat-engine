@@ -46,6 +46,12 @@ def validate_asset_document(data: Mapping[str, Any]) -> None:
     request = data.get("request")
     if not isinstance(request, Mapping):
         return
+    if "template" in request and request["template"] != "structured":
+        raise ValueError("request.template 仅支持 structured")
+    if request.get("template") == "structured" and not isinstance(
+        request.get("inputs", {}), Mapping
+    ):
+        raise ValueError("structured inputs 必须是对象")
     body_type = request.get("type", "json")
     if body_type not in BODY_TYPES:
         # multipart 与任何未知类型都在这里拒绝；类型名截断后才进消息。
@@ -83,12 +89,19 @@ def send_kwargs(
     body: Any,
     headers: dict[str, str] | None,
     content_type: str | None,
+    *,
+    explicit_json_null: bool = False,
 ) -> tuple[dict[str, Any], dict[str, str] | None]:
     """返回 (client.request 的请求体 kwargs, 最终 headers)。
 
     json 只产出 ``{"json": body}``，与 0.3.0 完全一致（现有资产零影响）。
     """
     if body_type == "json":
+        if explicit_json_null and body is None:
+            final = dict(headers or {})
+            if not has_header(final, "Content-Type"):
+                final["Content-Type"] = "application/json"
+            return {"content": "null"}, final
         return {"json": body}, headers
     if body_type == "form":
         data = {str(k): _scalar_text(v) for k, v in (body or {}).items()}

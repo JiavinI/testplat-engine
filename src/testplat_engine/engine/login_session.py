@@ -231,7 +231,7 @@ class SessionPool:
 
     def add_secrets(self, values: Iterable[str]) -> None:
         for value in values:
-            if isinstance(value, str) and len(value) >= MIN_SECRET_LENGTH:
+            if isinstance(value, str) and value:
                 self._secrets.add(value)
 
     def snapshot_secrets(self) -> tuple[str, ...]:

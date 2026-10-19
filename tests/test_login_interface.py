@@ -89,9 +89,7 @@ def test_login_result_repr_hides_values() -> None:
         lambda: LoginAuth(strategy="generic_flow", host="h", inject_headers={"X": "${login:t}"}),
         lambda: LoginAuth(strategy="p", host="h", inject_headers={"X": "literal"}),
         lambda: LoginAuth(strategy="p", host="h", tier="nope", session_cookie=True),
-        lambda: LoginAuth(
-            strategy="p", host="h", session_cookie=True, secret_values=(SecretStr("short"),)
-        ),
+        lambda: LoginAuth(strategy="p", host="h", session_cookie=True, secret_values=(None,)),
         lambda: LoginBody(type="multipart"),
         lambda: LoginStep(
             name="s", method="POST", path="/", body=LoginBody(type="raw", content=SECRET)

@@ -1,7 +1,7 @@
 """变量解析器。
 
-处理 API 契约中已实现字段（body / headers / success）的 ``${name}`` 渲染。
-不静默扩展未实现的 DSL（如 query、auth）；格式能力以现有 YAML 行为为准。
+未标记资产保持既有 ``${name}`` 渲染；显式 structured 模式委托受限结构化模板。
+body / headers / success 在本模块渲染，账号和项目上下文由独立的执行预检处理。
 """
 
 import copy
@@ -9,13 +9,14 @@ import re
 from typing import Any
 
 from testplat_engine.domain.api import Api
+from testplat_engine.engine.structured_template import render_template, structured_params
 
 # 整个字符串恰好是一个 ``${name}`` 占位符。
 _WHOLE_PLACEHOLDER_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 def resolve_variables(
-    api: Api, params: dict[str, Any], *, preserve_types: bool = False
+    api: Api, params: dict[str, Any], *, preserve_types: bool = False, skip_body: bool = False
 ) -> dict[str, Any]:
     """解析 API 中的变量
 
@@ -52,8 +53,18 @@ def resolve_variables(
         "content_type": (api.request or {}).get("content_type"),
     }
 
-    # 处理请求体
-    if api.request and "body" in api.request:
+    if api.request.get("template") == "structured":
+        effective = structured_params(api.request.get("inputs"), params)
+        if not skip_body and "body" in api.request:
+            result["body"] = render_template(api.request["body"], effective)
+        if "headers" in api.request:
+            result["headers"] = render_template(api.request["headers"], effective, text=True)
+        if api.success:
+            result["success"] = render_template(api.success, effective)
+        return result
+
+    # 完整请求覆盖不渲染模板 body，避免无关必填字段阻断调试。
+    if not skip_body and api.request and "body" in api.request:
         result["body"] = _resolve_dict(api.request["body"], params, preserve_types)
 
     # 处理请求头

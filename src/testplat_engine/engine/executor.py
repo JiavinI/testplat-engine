@@ -56,6 +56,7 @@ from testplat_engine.interface import (
     ErrorStage,
     InvalidAssetError,
     InvalidEnvironmentError,
+    InvalidInputError,
     JsonObject,
     JsonValue,
     LoginAuth,
@@ -165,6 +166,7 @@ class SingleApiEngine:
         environment: Mapping[str, JsonValue],
         *,
         auth: AuthTable | None = None,
+        identity: str | None = None,
     ) -> None:
         """只做资产加载、host 与身份解析，不发请求；供 Case 在执行前整体预检。
 
@@ -172,7 +174,7 @@ class SingleApiEngine:
         """
         api = self._load_api(api_id, assets_root)
         self._resolve_base_url(api, environment)
-        resolved_auth = resolve_identity(api, auth)
+        resolved_auth = resolve_identity(api, auth, identity)
         if resolved_auth is not None and isinstance(resolved_auth.material, LoginAuth):
             preflight_login(
                 resolved_auth.identity, resolved_auth.material, environment, self._strategies
@@ -228,7 +230,7 @@ class SingleApiEngine:
             api = self._load_api(request.api_id, request.assets_root)
             base_url = self._resolve_base_url(api, request.environment)
             # 身份解析属于预检：失败抛 invalid_environment，此时尚未发出任何请求。
-            resolved_auth = resolve_identity(api, request.auth)
+            resolved_auth = resolve_identity(api, request.auth, request.identity)
             login_material: LoginAuth | None = None
             login_host = ""
             if resolved_auth is not None and isinstance(resolved_auth.material, LoginAuth):
@@ -245,10 +247,28 @@ class SingleApiEngine:
                     api,
                     _thaw_json(request.params),
                     preserve_types=True,  # type: ignore[arg-type]
+                    skip_body=request.request_override is not None,
                 )
             else:
-                resolved = resolve_variables(api, dict(request.params))
+                resolved = resolve_variables(
+                    api, _thaw_json(request.params),
+                    skip_body=request.request_override is not None,
+                )
             body_type = resolved.get("body_type", "json")
+            if request.request_override is not None and "body" in request.request_override:
+                # 原样使用整个临时请求体，保留 JSON 类型、空值及字面量占位符。
+                resolved["body"] = _thaw_json(request.request_override["body"])
+                body = resolved["body"]
+                if body_type in {"query", "form"} and (
+                    not isinstance(body, Mapping)
+                    or any(
+                        value is not None and not isinstance(value, (str, int, float, bool))
+                        for value in body.values()
+                    )
+                ):
+                    raise InvalidInputError("Query/Form 临时内容必须是标量键值对象")
+                if body_type == "raw" and not isinstance(body, str):
+                    raise InvalidInputError("Raw 临时请求体必须是字符串")
 
             # 3.3b 按需登录（D8）：只有用到 login 身份的这一步才会触发登录。
             entry: SessionEntry | None = None
@@ -290,9 +310,15 @@ class SingleApiEngine:
                 resolved.get("headers"), resolved_auth, login_headers
             )
             body_kwargs, send_headers = send_kwargs(
-                body_type, resolved.get("body"), send_headers, resolved.get("content_type")
+                body_type,
+                resolved.get("body"),
+                send_headers,
+                resolved.get("content_type"),
+                explicit_json_null=request.request_override is not None,
             )
-            if body_type == "raw" and send_headers is not None:
+            if (
+                body_type == "raw" or request.request_override is not None
+            ) and send_headers is not None:
                 # Q4：raw 自动补的 Content-Type 同样出现在公开快照中（非秘密）。
                 public_headers = {
                     **(public_headers or {}),
@@ -366,8 +392,11 @@ class SingleApiEngine:
                     resolved.get("body"),
                     send_headers,
                     resolved.get("content_type"),
+                    explicit_json_null=request.request_override is not None,
                 )
-                if body_type == "raw" and send_headers is not None:
+                if (
+                    body_type == "raw" or request.request_override is not None
+                ) and send_headers is not None:
                     public_headers = {
                         **(public_headers or {}),
                         **{
@@ -517,6 +546,8 @@ class SingleApiEngine:
 
     def _resolve_base_url(self, api: Api, environment: Mapping[str, JsonValue]) -> str:
         """从已解析环境中取 host；缺失或类型错误一律 invalid_environment。"""
+        if api.projects and environment.get("business_project") not in api.projects:
+            raise InvalidEnvironmentError("接口不适用于当前业务项目")
         api_hosts = environment.get("api_hosts")
         if not isinstance(api_hosts, Mapping):
             raise InvalidEnvironmentError(

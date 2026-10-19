@@ -56,9 +56,9 @@ def make_success_steps() -> tuple[StepOutcome, StepOutcome]:
     )
 
 
-def test_version_is_0_3_0() -> None:
-    # 3.3b 登录鉴权与公开 auth 扩展，跨执行缓存 + 401 重发，发布 0.5.0。
-    assert __version__ == "0.5.0"
+def test_version_is_0_5_2() -> None:
+    # 调用身份与结构化 API 模板的本地候选版本。
+    assert __version__ == "0.5.2"
 
 
 def test_case_request_is_frozen_and_json_serializable() -> None:

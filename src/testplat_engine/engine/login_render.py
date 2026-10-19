@@ -19,7 +19,6 @@ from typing import Any
 from testplat_engine.interface import (
     LOGIN_HOST_PLACEHOLDER,
     LOGIN_REF_RE,
-    MIN_SECRET_LENGTH,
     LoginAuth,
     SecretStr,
 )
@@ -65,11 +64,11 @@ def render_headers(
 
 
 def secret_texts_in(value: object) -> set[str]:
-    """取嵌套结构里全部 SecretStr 的明文（≥ 8），用于按值替换集合。"""
+    """取嵌套结构里全部非空 SecretStr 的明文，用于按值替换集合。"""
     out: set[str] = set()
     if isinstance(value, SecretStr):
         text = value.reveal()
-        if len(text) >= MIN_SECRET_LENGTH:
+        if text:
             out.add(text)
     elif isinstance(value, Mapping):
         for item in value.values():
@@ -85,7 +84,7 @@ def static_login_secrets(
 ) -> set[str]:
     """一个 login 身份在登录前即已知的秘密：原始变量值 + 所有 SecretStr 模板 + 连接密码。
 
-    含 ``${login:}`` 的 SecretStr 模板只取其固定部分无意义，因此整体明文加入（≥ 8）；
+    含 ``${login:}`` 的 SecretStr 模板只取其固定部分无意义，因此整体明文加入；
     原始 ``${secret:}`` 值另由 ``secret_values`` 保证覆盖子串。
     """
     out: set[str] = set()

@@ -61,6 +61,23 @@ def header(sent_headers: dict[str, str], name: str) -> list[str]:
 # ------------------------------------------------------------- 注入基本路径
 
 
+@pytest.mark.parametrize("credential", ["", "u", "  raw\tvalue  "])
+async def test_static_credentials_are_forwarded_without_content_validation(credential: str) -> None:
+    client = EchoClient()
+    material = StaticHeaderAuth(
+        headers={"Authorization": SecretStr(credential)},
+        secret_values=(SecretStr(credential),),
+    )
+    outcome = await SingleApiEngine(client).execute(
+        api_request("api.auth.admin_get", auth_table(admin=material))
+    )
+    assert header(client.sent[0].headers, "Authorization") == [credential]
+    result = outcome.to_dict()
+    assert result["status"] == "success"
+    assert result["request"]["headers"]["Authorization"] == "***"
+    assert result["response"]["body"]["echo"]["value"] == ("***" if credential else "")
+
+
 async def test_admin_identity_injects_header_and_hides_secret() -> None:
     client = EchoClient()
     outcome = await SingleApiEngine(client).execute(api_request("api.auth.admin_get", auth_table()))

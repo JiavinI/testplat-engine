@@ -40,6 +40,7 @@ class ApiRunner(Protocol):
         environment: Mapping[str, JsonValue],
         *,
         auth: AuthTable | None = None,
+        identity: str | None = None,
     ) -> None: ...
 
 
@@ -56,6 +57,7 @@ class ApiStepExecutor:
             context.assets_root,
             _thaw_json(context.environment),  # type: ignore[arg-type]
             auth=context.auth,  # H2：预检同样按身份表解析，Case 在执行前一次性发现不可用身份
+            **({"identity": step.identity} if step.identity is not None else {}),
         )
 
     async def execute_step(self, step: CaseStep, context: StepExecutionContext) -> StepOutcome:
@@ -74,6 +76,7 @@ class ApiStepExecutor:
             timeout_seconds=context.timeout_seconds,
             # H2：步骤请求必须携带身份表，否则凭证 header 不会被注入。
             auth=context.auth,
+            identity=step.identity,
         )
         if context.session_pool is not None:
             # Q6：会话池只经内部关键字参数传递；未提供时保持旧调用签名（兼容测试替身）。

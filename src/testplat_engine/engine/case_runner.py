@@ -282,6 +282,7 @@ class CaseRunner:
             name=step.name,
             params=resolved,
             output=step.output,
+            identity=step.identity,
         )
         outcome = await self._executor_for(step).execute_step(resolved_step, context)
         return self._validate_outcome(step, outcome)

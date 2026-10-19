@@ -344,6 +344,7 @@ def _parse_step(raw: Any, *, index: int) -> CaseStep:
             name=name,
             params=params,
             output=output,
+            identity=raw.get("identity"),
         )
     except (TypeError, ValueError) as exc:
         raise InvalidAssetError(

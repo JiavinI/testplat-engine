@@ -126,7 +126,7 @@ def _finite_non_negative_seconds(value: float, field_name: str) -> float:
 # 任何 repr/str/to_dict/异常消息都不含秘密值。
 # ---------------------------------------------------------------------------
 
-# 秘密最小长度：过短的值做按值替换会误伤正常文本（设计稿 §5.3）。
+# 登录产出 token 的兼容规则；被测系统输入凭据不使用这个长度限制。
 MIN_SECRET_LENGTH = 8
 # header 名必须是 RFC 7230 token；同时保证错误消息里回显的名字不含控制字符。
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
@@ -207,7 +207,7 @@ class StaticHeaderAuth:
     ``headers``：header 名 → ``SecretStr``（Control 渲染后的完整 header 值）。
     ``secret_values``：渲染前的原始变量值（Q5）。按值替换集合 = 原始变量值 +
     完整 header 值；``secret_values`` 为空时，header 值本身即视为原始秘密。
-    长度 < 8 的原始秘密在构造期拒绝（Control 应先拦截为 ``UnavailableAuth``）。
+    凭据值的长度和内容由被测系统校验。
     """
 
     headers: Mapping[str, SecretStr]
@@ -239,17 +239,6 @@ class StaticHeaderAuth:
         for index, item in enumerate(raw):
             if not isinstance(item, SecretStr):
                 raise TypeError(f"StaticHeaderAuth.secret_values[{index}] 必须是 SecretStr")
-            if len(item) < MIN_SECRET_LENGTH:
-                raise ValueError(
-                    f"StaticHeaderAuth.secret_values[{index}] 长度不足 {MIN_SECRET_LENGTH}"
-                )
-        if not raw:
-            # 未提供原始变量值时，header 值本身就是原始秘密，同样受长度下限约束。
-            for name, value in copied.items():
-                if len(value) < MIN_SECRET_LENGTH:
-                    raise ValueError(
-                        f"StaticHeaderAuth.headers[{name}] 秘密长度不足 {MIN_SECRET_LENGTH}"
-                    )
         object.__setattr__(self, "headers", MappingProxyType(copied))
         object.__setattr__(self, "secret_values", raw)
 
@@ -694,7 +683,7 @@ class LoginAuth(_NoPickle):
     - ``strategy``：``generic_flow``（第 1/2 档，必须带 ``flow``）或插件名（第 3 档）；
     - ``tier``：Control 按 §1.1 判定的档位，非秘密，进入公开 ``auth`` / ``logins``；
     - ``params``：插件参数，SecretStr 值全部进入执行级按值替换集合；
-    - ``secret_values``：渲染前的原始 ``${secret:}`` 值（同 3.3a A1），≥ 8；
+    - ``secret_values``：渲染前的原始 ``${secret:}`` 值，不校验被测系统的凭据规则；
     - ``inject_headers``：header 名 → 模板（字面量 / ``${login:名字}`` / SecretStr 任意组合）；
     - Q1/Q2：至少一个 inject 值引用 ``${login:}``，或 ``session_cookie=True``。
     """
@@ -739,8 +728,6 @@ class LoginAuth(_NoPickle):
         for index, item in enumerate(raw):
             if not isinstance(item, SecretStr):
                 raise TypeError(f"LoginAuth.secret_values[{index}] 必须是 SecretStr")
-            if len(item) < MIN_SECRET_LENGTH:
-                raise ValueError(f"LoginAuth.secret_values[{index}] 长度不足 {MIN_SECRET_LENGTH}")
         object.__setattr__(self, "secret_values", raw)
         if self.validity is None:
             object.__setattr__(self, "validity", Validity())
@@ -1106,6 +1093,10 @@ class ApiExecutionRequest:
     timeout_seconds: float = 30.0
     # None ≡ v0.2.0 行为（匿名）；资产声明具体身份而 auth=None → 预检 422（Q2）。
     auth: AuthTable | None = None
+    # 本次调试的实际请求覆盖；body 整体替换，不渲染，不修改资产。
+    request_override: Mapping[str, JsonValue] | None = None
+    # 调用者选择优先于旧资产 auth；none 为显式匿名，省略沿用兼容回退。
+    identity: str | None = None
 
     def __post_init__(self) -> None:
         if not self.api_id:
@@ -1118,6 +1109,18 @@ class ApiExecutionRequest:
         )
         object.__setattr__(self, "params", _snapshot_object(self.params, "params", redact=False))
         _validate_auth_table(self.auth)
+        if self.identity is not None and self.identity != RESERVED_IDENTITY_NONE:
+            _validate_identity_name(self.identity, "调用身份")
+        if self.request_override is not None:
+            if not isinstance(self.request_override, Mapping) or set(self.request_override) != {
+                "body"
+            }:
+                raise ValueError("request_override 仅支持 body")
+            object.__setattr__(
+                self,
+                "request_override",
+                _snapshot_object(self.request_override, "request_override", redact=False),
+            )
 
     def to_dict(self) -> JsonObject:
         """返回可直接交给 `json.dumps` 的稳定表示。
@@ -1134,6 +1137,10 @@ class ApiExecutionRequest:
         }
         if self.auth is not None:
             payload["auth"] = self.auth.to_dict()
+        if self.request_override is not None:
+            payload["request_override"] = _thaw_json(self.request_override)
+        if self.identity is not None:
+            payload["identity"] = self.identity
         return payload
 
 
