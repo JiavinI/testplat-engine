@@ -1254,6 +1254,7 @@ class StepOutcome:
     skip_reason: str | None = None
     # 与单 API 结果同形的公开身份信息（0.5 九键）；skipped 步骤必须为 None。
     auth: JsonObject | None = None
+    trace: JsonObject | None = None
 
     def __post_init__(self) -> None:
         if not self.step_id:
@@ -1297,10 +1298,13 @@ class StepOutcome:
         if self.error is not None:
             object.__setattr__(self, "error", _snapshot_object(self.error, "error", redact=True))
         object.__setattr__(self, "auth", _public_auth(self.auth))
+        if self.trace is not None:
+            object.__setattr__(self, "trace", _snapshot_object(self.trace, "trace", redact=True))
 
     def to_dict(self) -> JsonObject:
         """返回可直接交给 `json.dumps` 的稳定表示（全新可变副本）。"""
         return {
+            **({"trace": _thaw_json(self.trace)} if self.trace is not None else {}),
             "step_id": self.step_id,
             "name": self.name,
             "type": self.type,
@@ -1342,8 +1346,11 @@ class CaseExecutionOutcome:
     steps: tuple[StepOutcome, ...]
     # 3.3b：整个 Case 的登录记录（执行级，按发生顺序）；步骤 auth.login_ref 为其下标。
     logins: Sequence[JsonObject] = ()
+    result_version: str | None = None
 
     def __post_init__(self) -> None:
+        if self.result_version not in (None, "0.3"):
+            raise ValueError("不支持的结果版本")
         if not self.case_id:
             raise ValueError("case_id 不能为空")
         object.__setattr__(self, "logins", _public_logins(self.logins))
@@ -1377,6 +1384,7 @@ class CaseExecutionOutcome:
     def to_dict(self) -> JsonObject:
         """返回可直接交给 `json.dumps` 的稳定表示（步骤与 summary 均为新副本）。"""
         return {
+            **({"result_version": self.result_version} if self.result_version else {}),
             "case_id": self.case_id,
             "status": self.status,
             "duration_seconds": self.duration_seconds,

@@ -56,9 +56,9 @@ def make_success_steps() -> tuple[StepOutcome, StepOutcome]:
     )
 
 
-def test_version_is_0_5_2() -> None:
-    # 调用身份与结构化 API 模板的本地候选版本。
-    assert __version__ == "0.5.2"
+def test_version_is_0_6_0() -> None:
+    # 场景 schema 0.3 与公开描述能力的交付版本。
+    assert __version__ == "0.6.0"
 
 
 def test_case_request_is_frozen_and_json_serializable() -> None:

@@ -1,8 +1,9 @@
 """testplat-engine: 通用接口自动化测试平台 - 执行引擎"""
 
-__version__ = "0.5.2"
+__version__ = "0.6.0"
 
 from testplat_engine.engine.executor import SingleApiEngine, create_engine, run_api
+from testplat_engine.engine.scenario import describe_case
 from testplat_engine.interface import (
     ApiExecutionOutcome,
     ApiExecutionRequest,
@@ -78,6 +79,7 @@ __all__ = [
     "StepOutcome",
     "UnavailableAuth",
     "create_engine",
+    "describe_case",
     "run_api",
     "__version__",
 ]
