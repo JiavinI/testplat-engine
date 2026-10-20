@@ -1,3 +1,7 @@
+## Engine 0.6.0
+
+支持场景 schema 0.3、公共 `describe_case`、flow/map、提取、Decimal、严格断言和有序列表变换，保留 Case 0.2 兼容。已知输入/输出路径在请求前预检，动态响应引用在值产生后校验。契约见 [场景 schema 0.3](docs/scenario-schema-0.3.md)。
+
 # testplat-engine
 
 `testplat-engine` 是一个 Python API 资产执行库。它负责读取 YAML API 资产、解析变量、发送 HTTP 请求，并根据有限的状态码或 JSON 路径条件返回结果。

@@ -138,6 +138,16 @@ class SingleApiEngine:
     async def _execute_case(self, request: CaseExecutionRequest) -> CaseExecutionOutcome:
         """加载并校验 Case（preflight，不产生执行结果），再交给 CaseRunner。"""
         try:
+            from testplat_engine.engine.scenario import (
+                ScenarioRunner,
+                load_definition,
+                read_document,
+            )
+
+            raw = read_document(request.assets_root, request.case_id, "case")
+            if raw.get("schema_version") == "0.3":
+                definition = load_definition(request.assets_root, request.case_id)
+                return await ScenarioRunner(self).run(request, definition)
             registry = Registry(assets_root=request.assets_root)
             case = registry.load_case(request.case_id)
             case_params = validate_case_request_params(
@@ -251,7 +261,8 @@ class SingleApiEngine:
                 )
             else:
                 resolved = resolve_variables(
-                    api, _thaw_json(request.params),
+                    api,
+                    _thaw_json(request.params),
                     skip_body=request.request_override is not None,
                 )
             body_type = resolved.get("body_type", "json")
